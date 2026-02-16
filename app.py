@@ -6,7 +6,7 @@ Ejecutar: streamlit run app.py
 import streamlit as st
 
 st.set_page_config(
-    page_title="Dietética ERP",
+    page_title="Aquí y Ahora",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -14,7 +14,7 @@ st.set_page_config(
 
 from database import init_db
 from auth import require_login, require_admin, logout
-from views import productos, ventas, stock, precios, gastos, caja, auditoria, admin
+from views import productos, ventas, compras, stock, precios, gastos, caja, auditoria, admin
 
 # Inicializar base de datos
 init_db()
@@ -25,13 +25,14 @@ if not require_login():
 
 # --- Sidebar: Navegación ---
 with st.sidebar:
-    st.markdown(f"### 🌱 Dietética ERP")
+    st.markdown(f"### 🌱 Aquí y Ahora")
     st.caption(f"Sesión: **{st.session_state['nombre']}** ({st.session_state['rol'].upper()})")
     st.divider()
 
     # Menú dinámico según rol
     paginas = {
         "Ventas": "ventas",
+        "Compras": "compras",
         "Productos": "productos",
         "Stock": "stock",
         "Caja Diaria": "caja",
@@ -56,6 +57,8 @@ try:
         productos.render()
     elif vista == "ventas":
         ventas.render()
+    elif vista == "compras":
+        compras.render()
     elif vista == "stock":
         stock.render()
     elif vista == "precios":

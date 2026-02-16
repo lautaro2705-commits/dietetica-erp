@@ -11,7 +11,7 @@ from sqlalchemy import func
 from database import (
     SessionLocal, Producto, Fraccion, Venta, DetalleVenta,
     MovimientoStock, Auditoria, Gasto, Categoria, Proveedor,
-    Usuario, hash_password,
+    Usuario, hash_password, Compra, DetalleCompra,
 )
 
 
@@ -606,6 +606,133 @@ def desactivar_usuario(admin_id: int, user_id: int):
     except Exception:
         session.rollback()
         raise
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Compras
+# ---------------------------------------------------------------------------
+
+def procesar_compra(
+    usuario_id: int,
+    proveedor_id: int | None,
+    items: list[dict],
+    numero_factura: str = "",
+    observaciones: str = "",
+) -> Compra:
+    """Procesa una compra completa.
+
+    items: lista de dicts con:
+        - producto_id: int
+        - cantidad: float (bultos)
+        - precio_unitario: float (costo por bulto)
+        - actualizar_costo: bool
+    """
+    session = SessionLocal()
+    try:
+        compra = Compra(
+            usuario_id=usuario_id,
+            proveedor_id=proveedor_id,
+            numero_factura=numero_factura,
+            observaciones=observaciones,
+        )
+        session.add(compra)
+        session.flush()
+
+        total = 0.0
+
+        for item in items:
+            prod = session.query(Producto).get(item["producto_id"])
+            if not prod:
+                raise ValueError(f"Producto ID {item['producto_id']} no encontrado")
+
+            cantidad = item["cantidad"]
+            precio_unitario = item["precio_unitario"]
+            subtotal = round(precio_unitario * cantidad, 2)
+            total += subtotal
+            actualizar = item.get("actualizar_costo", True)
+
+            detalle = DetalleCompra(
+                compra_id=compra.id,
+                producto_id=prod.id,
+                cantidad=cantidad,
+                precio_unitario=precio_unitario,
+                subtotal=subtotal,
+                actualizar_costo=actualizar,
+            )
+            session.add(detalle)
+
+            # Entrada de stock
+            stock_anterior = prod.stock_actual
+            prod.stock_actual += cantidad
+
+            mov = MovimientoStock(
+                producto_id=prod.id,
+                tipo="entrada",
+                cantidad=cantidad,
+                referencia=f"Compra #{compra.id}"
+                           + (f" Fact: {numero_factura}" if numero_factura else ""),
+                usuario_id=usuario_id,
+            )
+            session.add(mov)
+
+            # Actualizar precio de costo si corresponde
+            costo_anterior = prod.precio_costo
+            if actualizar:
+                prod.precio_costo = precio_unitario
+                prod.updated_at = datetime.utcnow()
+
+            registrar_auditoria(
+                session, usuario_id, "COMPRA", "productos",
+                registro_id=prod.id,
+                valor_anterior={"stock_actual": stock_anterior,
+                                "precio_costo": costo_anterior},
+                valor_nuevo={"stock_actual": prod.stock_actual,
+                             "precio_costo": prod.precio_costo,
+                             "cantidad_comprada": cantidad,
+                             "costo_actualizado": actualizar},
+            )
+
+        compra.total = round(total, 2)
+
+        registrar_auditoria(
+            session, usuario_id, "COMPRA", "compras",
+            registro_id=compra.id,
+            valor_nuevo={"total": compra.total, "items": len(items),
+                         "proveedor_id": proveedor_id},
+        )
+        session.commit()
+        session.refresh(compra)
+        return compra
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def listar_compras(fecha_desde: date | None = None, fecha_hasta: date | None = None):
+    session = SessionLocal()
+    try:
+        q = session.query(Compra).order_by(Compra.fecha.desc())
+        if fecha_desde:
+            q = q.filter(Compra.fecha >= datetime.combine(fecha_desde, datetime.min.time()))
+        if fecha_hasta:
+            q = q.filter(Compra.fecha <= datetime.combine(fecha_hasta, datetime.max.time()))
+        return q.all()
+    finally:
+        session.close()
+
+
+def obtener_detalle_compra(compra_id: int):
+    session = SessionLocal()
+    try:
+        return (
+            session.query(DetalleCompra)
+            .filter_by(compra_id=compra_id)
+            .all()
+        )
     finally:
         session.close()
 

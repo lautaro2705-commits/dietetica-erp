@@ -226,6 +226,37 @@ class Auditoria(Base):
     usuario = relationship("Usuario")
 
 
+class Compra(Base):
+    __tablename__ = "compras"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    proveedor_id = Column(Integer, ForeignKey("proveedores.id"), nullable=True)
+    fecha = Column(DateTime, default=datetime.utcnow)
+    numero_factura = Column(String(100), default="")
+    total = Column(Float, nullable=False, default=0.0)
+    observaciones = Column(Text, default="")
+
+    usuario = relationship("Usuario")
+    proveedor = relationship("Proveedor")
+    detalles = relationship("DetalleCompra", back_populates="compra")
+
+
+class DetalleCompra(Base):
+    __tablename__ = "detalle_compras"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    compra_id = Column(Integer, ForeignKey("compras.id"), nullable=False)
+    producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
+    cantidad = Column(Float, nullable=False, default=1.0)
+    precio_unitario = Column(Float, nullable=False)
+    subtotal = Column(Float, nullable=False)
+    actualizar_costo = Column(Boolean, default=True)
+
+    compra = relationship("Compra", back_populates="detalles")
+    producto = relationship("Producto")
+
+
 # ---------------------------------------------------------------------------
 # Inicialización
 # ---------------------------------------------------------------------------
