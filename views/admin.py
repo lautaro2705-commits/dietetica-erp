@@ -1,12 +1,15 @@
 """
 views/admin.py - Panel de administración: usuarios y backup.
 """
+from __future__ import annotations
 
-import os
+import io
+import csv
+import json
 import streamlit as st
 from controllers import crear_usuario, listar_usuarios, desactivar_usuario
 from auth import require_admin
-from database import DB_PATH
+from database import SessionLocal, engine, Base
 
 
 def render():
@@ -83,22 +86,46 @@ def _render_usuarios():
 def _render_backup():
     st.subheader("Exportar Backup de Base de Datos")
     st.markdown(
-        "Descargá una copia completa de la base de datos SQLite. "
-        "Este archivo contiene **todos** los datos del sistema."
+        "Descargá una copia completa de todos los datos del sistema en formato **JSON**. "
+        "Incluye todas las tablas con todos los registros."
     )
 
-    if os.path.exists(DB_PATH):
-        file_size = os.path.getsize(DB_PATH)
-        st.caption(f"Archivo: `dietetica.db` | Tamaño: {file_size / 1024:.1f} KB")
-
-        with open(DB_PATH, "rb") as f:
+    if st.button("Generar Backup", type="primary", use_container_width=True):
+        try:
+            backup_data = _generate_json_backup()
+            json_str = json.dumps(backup_data, ensure_ascii=False, indent=2, default=str)
             st.download_button(
-                label="Descargar Backup (.db)",
-                data=f,
-                file_name="dietetica_backup.db",
-                mime="application/octet-stream",
+                label="Descargar Backup (.json)",
+                data=json_str,
+                file_name="dietetica_backup.json",
+                mime="application/json",
                 use_container_width=True,
-                type="primary",
             )
-    else:
-        st.error("No se encontró el archivo de base de datos.")
+            st.success(
+                f"Backup generado: {sum(len(v) for v in backup_data.values())} "
+                f"registros en {len(backup_data)} tablas."
+            )
+        except Exception as e:
+            st.error(f"Error generando backup: {e}")
+
+
+def _generate_json_backup() -> dict:
+    """Exporta todas las tablas como diccionario JSON."""
+    from sqlalchemy import inspect
+
+    session = SessionLocal()
+    try:
+        backup = {}
+        inspector = inspect(engine)
+        table_names = inspector.get_table_names()
+
+        for table_name in table_names:
+            rows = session.execute(Base.metadata.tables[table_name].select()).fetchall()
+            columns = [col["name"] for col in inspector.get_columns(table_name)]
+            backup[table_name] = [
+                {col: val for col, val in zip(columns, row)}
+                for row in rows
+            ]
+        return backup
+    finally:
+        session.close()

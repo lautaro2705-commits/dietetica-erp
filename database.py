@@ -16,10 +16,41 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "dietetica.db")
-DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
+# ---------------------------------------------------------------------------
+# Conexión: PostgreSQL (Supabase) en producción, SQLite local como fallback
+# ---------------------------------------------------------------------------
+
+def _get_database_url() -> str:
+    """Obtiene la URL de conexión. Prioridad: st.secrets > env var > SQLite local."""
+    # 1. Intentar Streamlit secrets (para Streamlit Cloud)
+    try:
+        import streamlit as st
+        url = st.secrets.get("DATABASE_URL", "")
+        if url:
+            return url
+    except Exception:
+        pass
+    # 2. Variable de entorno (para desarrollo local con PostgreSQL)
+    url = os.environ.get("DATABASE_URL", "")
+    if url:
+        return url
+    # 3. Fallback: SQLite local (desarrollo sin PostgreSQL)
+    db_path = os.path.join(BASE_DIR, "dietetica.db")
+    return f"sqlite:///{db_path}"
+
+
+DATABASE_URL = _get_database_url()
+_is_sqlite = DATABASE_URL.startswith("sqlite")
+
+_engine_kwargs = {"echo": False}
+if _is_sqlite:
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    _engine_kwargs["pool_pre_ping"] = True
+    _engine_kwargs["pool_size"] = 5
+
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
