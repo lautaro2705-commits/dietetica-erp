@@ -8,6 +8,9 @@ import os
 import hashlib
 import secrets
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()  # Carga variables desde .env
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, DateTime,
