@@ -1,8 +1,9 @@
 """
-views/productos.py - ABM de productos y fracciones.
+views/productos.py - ABM de productos y fracciones con edición y vencimiento.
 """
 
 import streamlit as st
+from datetime import date
 from controllers import (
     crear_producto, actualizar_producto, desactivar_producto,
     listar_productos, crear_fraccion, listar_fracciones,
@@ -48,17 +49,34 @@ def _render_listado():
                      or busqueda.lower() in p.codigo.lower()]
 
     for prod in productos:
-        with st.expander(f"**{prod.codigo}** — {prod.nombre} | Stock: {prod.stock_actual} {prod.unidad_medida}"):
+        # Indicador de vencimiento en el título
+        venc_badge = ""
+        if prod.fecha_vencimiento:
+            dias_restantes = (prod.fecha_vencimiento - date.today()).days
+            if dias_restantes < 0:
+                venc_badge = " 🔴 VENCIDO"
+            elif dias_restantes <= 30:
+                venc_badge = " 🟡 Próximo a vencer"
+
+        with st.expander(
+            f"**{prod.codigo}** — {prod.nombre} | "
+            f"Stock: {prod.stock_actual} {prod.unidad_medida}{venc_badge}"
+        ):
             col1, col2, col3 = st.columns(3)
             col1.metric("Costo", f"${prod.precio_costo:,.2f}")
             col2.metric("Mayorista", f"${prod.precio_venta_mayorista:,.2f}")
             col3.metric("Margen Min.", f"{prod.margen_minorista_pct}%")
 
+            venc_text = (
+                prod.fecha_vencimiento.strftime("%d/%m/%Y")
+                if prod.fecha_vencimiento else "Sin vencimiento"
+            )
             st.caption(
                 f"Contenido: {prod.contenido_total} {prod.unidad_medida} | "
                 f"Stock mín: {prod.stock_minimo} | "
                 f"Categoría: {prod.categoria.nombre if prod.categoria else '—'} | "
-                f"Proveedor: {prod.proveedor.nombre if prod.proveedor else '—'}"
+                f"Proveedor: {prod.proveedor.nombre if prod.proveedor else '—'} | "
+                f"Vencimiento: {venc_text}"
             )
 
             # Fracciones
@@ -79,10 +97,12 @@ def _render_listado():
 
             # Acciones admin
             if require_admin():
-                col_a, col_b = st.columns(2)
+                col_a, col_b, col_c = st.columns(3)
                 with col_a:
                     _render_agregar_fraccion(prod)
                 with col_b:
+                    _render_editar_producto(prod)
+                with col_c:
                     if st.button(f"Desactivar", key=f"desact_{prod.id}", type="secondary"):
                         try:
                             desactivar_producto(st.session_state["user_id"], prod.id)
@@ -90,6 +110,126 @@ def _render_listado():
                             st.rerun()
                         except Exception as e:
                             st.error(str(e))
+
+
+def _render_editar_producto(prod):
+    """Popover para editar un producto existente."""
+    with st.popover("✏️ Editar"):
+        categorias = listar_categorias()
+        proveedores = listar_proveedores()
+
+        cat_options = {"Sin categoría": None}
+        for c in categorias:
+            cat_options[c.nombre] = c.id
+        prov_options = {"Sin proveedor": None}
+        for p in proveedores:
+            prov_options[p.nombre] = p.id
+
+        # Encontrar selección actual
+        cat_actual = "Sin categoría"
+        for name, cid in cat_options.items():
+            if cid == prod.categoria_id:
+                cat_actual = name
+                break
+        prov_actual = "Sin proveedor"
+        for name, pid in prov_options.items():
+            if pid == prod.proveedor_id:
+                prov_actual = name
+                break
+
+        with st.form(f"edit_form_{prod.id}"):
+            nombre = st.text_input("Nombre", value=prod.nombre, key=f"en_{prod.id}")
+            descripcion = st.text_area("Descripción", value=prod.descripcion or "",
+                                       key=f"ed_{prod.id}")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                cat_sel = st.selectbox(
+                    "Categoría", list(cat_options.keys()),
+                    index=list(cat_options.keys()).index(cat_actual),
+                    key=f"ec_{prod.id}",
+                )
+                unidad = st.selectbox(
+                    "Unidad", ["kg", "litro", "unidad"],
+                    index=["kg", "litro", "unidad"].index(prod.unidad_medida),
+                    key=f"eu_{prod.id}",
+                )
+            with col2:
+                prov_sel = st.selectbox(
+                    "Proveedor", list(prov_options.keys()),
+                    index=list(prov_options.keys()).index(prov_actual),
+                    key=f"ep_{prod.id}",
+                )
+                contenido = st.number_input(
+                    "Contenido por bulto", min_value=0.01,
+                    value=float(prod.contenido_total), step=0.5,
+                    key=f"eco_{prod.id}",
+                )
+
+            st.divider()
+            col3, col4, col5 = st.columns(3)
+            with col3:
+                precio_costo = st.number_input(
+                    "Precio Costo $", min_value=0.0,
+                    value=float(prod.precio_costo), step=100.0,
+                    key=f"epc_{prod.id}",
+                )
+            with col4:
+                precio_mayorista = st.number_input(
+                    "Precio Mayorista $", min_value=0.0,
+                    value=float(prod.precio_venta_mayorista), step=100.0,
+                    key=f"epm_{prod.id}",
+                )
+            with col5:
+                margen = st.number_input(
+                    "Margen Minorista %", min_value=0.0,
+                    value=float(prod.margen_minorista_pct), step=5.0,
+                    key=f"emm_{prod.id}",
+                )
+
+            col6, col7 = st.columns(2)
+            with col6:
+                stock_minimo = st.number_input(
+                    "Stock Mínimo", min_value=0.0,
+                    value=float(prod.stock_minimo), step=1.0,
+                    key=f"esm_{prod.id}",
+                )
+            with col7:
+                tiene_venc = st.checkbox(
+                    "Tiene fecha de vencimiento",
+                    value=prod.fecha_vencimiento is not None,
+                    key=f"etv_{prod.id}",
+                )
+                if tiene_venc:
+                    fecha_venc = st.date_input(
+                        "Fecha de vencimiento",
+                        value=prod.fecha_vencimiento or date.today(),
+                        key=f"efv_{prod.id}",
+                    )
+                else:
+                    fecha_venc = None
+
+            if st.form_submit_button("Guardar Cambios", use_container_width=True):
+                try:
+                    actualizar_producto(
+                        st.session_state["user_id"],
+                        prod.id,
+                        nombre=nombre,
+                        descripcion=descripcion,
+                        categoria_id=cat_options.get(cat_sel),
+                        proveedor_id=prov_options.get(prov_sel),
+                        unidad_medida=unidad,
+                        contenido_total=contenido,
+                        precio_costo=precio_costo,
+                        precio_venta_mayorista=precio_mayorista,
+                        margen_minorista_pct=margen,
+                        stock_minimo=stock_minimo,
+                        fecha_vencimiento=fecha_venc,
+                    )
+                    st.success(f"Producto '{nombre}' actualizado.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
 
 def _render_agregar_fraccion(prod):
@@ -150,8 +290,13 @@ def _render_nuevo_producto():
         col6, col7 = st.columns(2)
         with col6:
             stock_inicial = st.number_input("Stock Inicial (bultos)", min_value=0.0, step=1.0)
-        with col7:
             stock_minimo = st.number_input("Stock Mínimo (alerta)", min_value=0.0, step=1.0)
+        with col7:
+            tiene_venc = st.checkbox("Tiene fecha de vencimiento", value=False)
+            if tiene_venc:
+                fecha_venc = st.date_input("Fecha de vencimiento", value=date.today())
+            else:
+                fecha_venc = None
 
         submitted = st.form_submit_button("Crear Producto", use_container_width=True)
 
@@ -160,8 +305,7 @@ def _render_nuevo_producto():
                 st.error("Código y Nombre son obligatorios.")
             else:
                 try:
-                    crear_producto(
-                        st.session_state["user_id"],
+                    kwargs = dict(
                         codigo=codigo,
                         nombre=nombre,
                         descripcion=descripcion,
@@ -174,6 +318,12 @@ def _render_nuevo_producto():
                         margen_minorista_pct=margen,
                         stock_actual=stock_inicial,
                         stock_minimo=stock_minimo,
+                    )
+                    if fecha_venc:
+                        kwargs["fecha_vencimiento"] = fecha_venc
+                    crear_producto(
+                        st.session_state["user_id"],
+                        **kwargs,
                     )
                     st.success(f"Producto '{nombre}' creado exitosamente.")
                     st.rerun()

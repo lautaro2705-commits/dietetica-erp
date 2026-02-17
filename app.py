@@ -14,7 +14,7 @@ st.set_page_config(
 
 from database import init_db
 from auth import require_login, require_admin, logout
-from views import productos, ventas, compras, stock, precios, gastos, caja, auditoria, admin
+from views import productos, ventas, compras, stock, precios, gastos, caja, auditoria, admin, clientes
 
 # Inicializar base de datos
 init_db()
@@ -35,6 +35,7 @@ with st.sidebar:
         "Compras": "compras",
         "Productos": "productos",
         "Stock": "stock",
+        "Clientes": "clientes",
         "Caja Diaria": "caja",
         "Gastos": "gastos",
     }
@@ -61,6 +62,8 @@ try:
         compras.render()
     elif vista == "stock":
         stock.render()
+    elif vista == "clientes":
+        clientes.render()
     elif vista == "precios":
         precios.render()
     elif vista == "gastos":

@@ -14,7 +14,7 @@ load_dotenv()  # Carga variables desde .env
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, DateTime,
-    Text, ForeignKey, event
+    Date, Text, ForeignKey, event, inspect,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -114,6 +114,38 @@ class Proveedor(Base):
     productos = relationship("Producto", back_populates="proveedor")
 
 
+class Cliente(Base):
+    __tablename__ = "clientes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    nombre = Column(String(200), nullable=False)
+    cuit = Column(String(20), default="")
+    telefono = Column(String(50), default="")
+    email = Column(String(150), default="")
+    direccion = Column(Text, default="")
+    saldo_cuenta_corriente = Column(Float, nullable=False, default=0.0)  # positivo = nos debe
+    activo = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    movimientos_cuenta = relationship("MovimientoCuenta", back_populates="cliente")
+
+
+class MovimientoCuenta(Base):
+    """Movimientos de cuenta corriente de clientes."""
+    __tablename__ = "movimientos_cuenta"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=False)
+    tipo = Column(String(20), nullable=False)  # cargo | pago
+    monto = Column(Float, nullable=False)
+    referencia = Column(String(200), default="")  # ej: "Venta #5" o "Pago efectivo"
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    fecha = Column(DateTime, default=datetime.utcnow)
+
+    cliente = relationship("Cliente", back_populates="movimientos_cuenta")
+    usuario = relationship("Usuario")
+
+
 class Producto(Base):
     __tablename__ = "productos"
 
@@ -130,6 +162,7 @@ class Producto(Base):
     margen_minorista_pct = Column(Float, nullable=False, default=30.0)
     stock_actual = Column(Float, nullable=False, default=0.0)
     stock_minimo = Column(Float, nullable=False, default=0.0)
+    fecha_vencimiento = Column(Date, nullable=True)  # Null = sin vencimiento
     activo = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -157,12 +190,15 @@ class Venta(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True)
     fecha = Column(DateTime, default=datetime.utcnow)
     tipo = Column(String(20), nullable=False, default="minorista")  # mayorista | minorista
+    metodo_pago = Column(String(30), nullable=False, default="efectivo")  # efectivo | transferencia | cuenta_corriente
     total = Column(Float, nullable=False, default=0.0)
     observaciones = Column(Text, default="")
 
     usuario = relationship("Usuario")
+    cliente = relationship("Cliente")
     detalles = relationship("DetalleVenta", back_populates="venta")
 
 
@@ -261,9 +297,43 @@ class DetalleCompra(Base):
 # Inicialización
 # ---------------------------------------------------------------------------
 
+def _migrate_columns():
+    """Agrega columnas nuevas a tablas existentes (mini-migración)."""
+    insp = inspect(engine)
+    with engine.connect() as conn:
+        # Producto.fecha_vencimiento
+        if "productos" in insp.get_table_names():
+            cols = [c["name"] for c in insp.get_columns("productos")]
+            if "fecha_vencimiento" not in cols:
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        "ALTER TABLE productos ADD COLUMN fecha_vencimiento DATE"
+                    )
+                )
+                conn.commit()
+        # Venta.metodo_pago y Venta.cliente_id
+        if "ventas" in insp.get_table_names():
+            cols = [c["name"] for c in insp.get_columns("ventas")]
+            if "metodo_pago" not in cols:
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        "ALTER TABLE ventas ADD COLUMN metodo_pago VARCHAR(30) DEFAULT 'efectivo'"
+                    )
+                )
+                conn.commit()
+            if "cliente_id" not in cols:
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        "ALTER TABLE ventas ADD COLUMN cliente_id INTEGER"
+                    )
+                )
+                conn.commit()
+
+
 def init_db():
     """Crea todas las tablas y el usuario Admin por defecto si no existen."""
     Base.metadata.create_all(engine)
+    _migrate_columns()
 
     session = SessionLocal()
     try:
