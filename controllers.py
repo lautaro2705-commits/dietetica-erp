@@ -12,7 +12,7 @@ from database import (
     SessionLocal, Producto, Fraccion, Venta, DetalleVenta,
     MovimientoStock, Auditoria, Gasto, Categoria, Proveedor,
     Usuario, hash_password, Compra, DetalleCompra,
-    Cliente, MovimientoCuenta,
+    Cliente, MovimientoCuenta, Devolucion, CajaDiaria, RetiroEfectivo,
 )
 
 
@@ -313,6 +313,12 @@ def procesar_venta(
             subtotal = round(precio_unitario * cantidad, 2)
             total += subtotal
 
+            # Capturar costo al momento de la venta para cálculo de ganancia
+            if fraccion_id and frac:
+                costo_unit = (prod.precio_costo / prod.contenido_total) * frac.cantidad
+            else:
+                costo_unit = prod.precio_costo
+
             detalle = DetalleVenta(
                 venta_id=venta.id,
                 producto_id=prod.id,
@@ -320,6 +326,7 @@ def procesar_venta(
                 cantidad=cantidad,
                 precio_unitario=precio_unitario,
                 subtotal=subtotal,
+                costo_unitario=round(costo_unit, 2),
             )
             session.add(detalle)
 
@@ -960,5 +967,516 @@ def crear_proveedor(usuario_id: int, nombre: str, contacto: str = "",
     except Exception:
         session.rollback()
         raise
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Devoluciones y Anulaciones
+# ---------------------------------------------------------------------------
+
+def anular_venta(usuario_id: int, venta_id: int, motivo: str = "") -> Devolucion:
+    """Anula una venta completa: reingresa stock, revierte cuenta corriente."""
+    session = SessionLocal()
+    try:
+        venta = session.query(Venta).get(venta_id)
+        if not venta:
+            raise ValueError("Venta no encontrada")
+        if venta.anulada:
+            raise ValueError("Esta venta ya fue anulada")
+
+        venta.anulada = True
+
+        # Reingresar stock de cada item
+        detalles = session.query(DetalleVenta).filter_by(venta_id=venta_id).all()
+        for d in detalles:
+            prod = session.query(Producto).get(d.producto_id)
+            if prod:
+                if d.fraccion_id:
+                    frac = session.query(Fraccion).get(d.fraccion_id)
+                    if frac:
+                        stock_a_devolver = (frac.cantidad * d.cantidad) / prod.contenido_total
+                    else:
+                        stock_a_devolver = d.cantidad
+                else:
+                    stock_a_devolver = d.cantidad
+
+                prod.stock_actual += stock_a_devolver
+                mov = MovimientoStock(
+                    producto_id=prod.id,
+                    tipo="entrada",
+                    cantidad=stock_a_devolver,
+                    referencia=f"Anulación Venta #{venta_id}",
+                    usuario_id=usuario_id,
+                )
+                session.add(mov)
+
+        # Revertir cuenta corriente si aplica
+        metodo = getattr(venta, "metodo_pago", "efectivo") or "efectivo"
+        if metodo == "cuenta_corriente" and venta.cliente_id:
+            cliente = session.query(Cliente).get(venta.cliente_id)
+            if cliente:
+                cliente.saldo_cuenta_corriente -= venta.total
+                mov_cc = MovimientoCuenta(
+                    cliente_id=venta.cliente_id,
+                    tipo="pago",
+                    monto=venta.total,
+                    referencia=f"Anulación Venta #{venta_id}",
+                    usuario_id=usuario_id,
+                )
+                session.add(mov_cc)
+
+        dev = Devolucion(
+            venta_id=venta_id,
+            usuario_id=usuario_id,
+            motivo=motivo,
+            tipo="anulacion_total",
+            monto_devuelto=venta.total,
+        )
+        session.add(dev)
+
+        registrar_auditoria(
+            session, usuario_id, "ANULAR_VENTA", "ventas",
+            registro_id=venta_id,
+            valor_anterior={"total": venta.total, "anulada": False},
+            valor_nuevo={"anulada": True, "motivo": motivo},
+        )
+        session.commit()
+        session.refresh(dev)
+        return dev
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def devolucion_parcial(
+    usuario_id: int, venta_id: int, items_devolver: list[dict], motivo: str = ""
+) -> Devolucion:
+    """Devolución parcial de items de una venta.
+
+    items_devolver: lista de dicts con:
+        - detalle_id: int (ID del DetalleVenta)
+        - cantidad: float (cantidad a devolver)
+    """
+    session = SessionLocal()
+    try:
+        venta = session.query(Venta).get(venta_id)
+        if not venta:
+            raise ValueError("Venta no encontrada")
+        if venta.anulada:
+            raise ValueError("Esta venta ya fue anulada")
+
+        monto_devuelto = 0.0
+
+        for item in items_devolver:
+            detalle = session.query(DetalleVenta).get(item["detalle_id"])
+            if not detalle or detalle.venta_id != venta_id:
+                raise ValueError(f"Detalle {item['detalle_id']} no pertenece a esta venta")
+
+            cant_devolver = item["cantidad"]
+            if cant_devolver > detalle.cantidad:
+                raise ValueError(
+                    f"No se puede devolver {cant_devolver}, cantidad original: {detalle.cantidad}"
+                )
+
+            monto_item = round(detalle.precio_unitario * cant_devolver, 2)
+            monto_devuelto += monto_item
+
+            # Reingresar stock
+            prod = session.query(Producto).get(detalle.producto_id)
+            if prod:
+                if detalle.fraccion_id:
+                    frac = session.query(Fraccion).get(detalle.fraccion_id)
+                    if frac:
+                        stock_a_devolver = (frac.cantidad * cant_devolver) / prod.contenido_total
+                    else:
+                        stock_a_devolver = cant_devolver
+                else:
+                    stock_a_devolver = cant_devolver
+
+                prod.stock_actual += stock_a_devolver
+                mov = MovimientoStock(
+                    producto_id=prod.id,
+                    tipo="entrada",
+                    cantidad=stock_a_devolver,
+                    referencia=f"Devolución parcial Venta #{venta_id}",
+                    usuario_id=usuario_id,
+                )
+                session.add(mov)
+
+        # Revertir cuenta corriente parcial si aplica
+        metodo = getattr(venta, "metodo_pago", "efectivo") or "efectivo"
+        if metodo == "cuenta_corriente" and venta.cliente_id:
+            cliente = session.query(Cliente).get(venta.cliente_id)
+            if cliente:
+                cliente.saldo_cuenta_corriente -= monto_devuelto
+                mov_cc = MovimientoCuenta(
+                    cliente_id=venta.cliente_id,
+                    tipo="pago",
+                    monto=monto_devuelto,
+                    referencia=f"Devolución parcial Venta #{venta_id}",
+                    usuario_id=usuario_id,
+                )
+                session.add(mov_cc)
+
+        dev = Devolucion(
+            venta_id=venta_id,
+            usuario_id=usuario_id,
+            motivo=motivo,
+            tipo="devolucion_parcial",
+            monto_devuelto=round(monto_devuelto, 2),
+        )
+        session.add(dev)
+
+        registrar_auditoria(
+            session, usuario_id, "DEVOLUCION_PARCIAL", "ventas",
+            registro_id=venta_id,
+            valor_nuevo={"monto_devuelto": monto_devuelto, "motivo": motivo,
+                         "items": len(items_devolver)},
+        )
+        session.commit()
+        session.refresh(dev)
+        return dev
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def obtener_venta(venta_id: int) -> Venta | None:
+    session = SessionLocal()
+    try:
+        return session.query(Venta).get(venta_id)
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Caja Diaria — Apertura, Cierre, Retiros
+# ---------------------------------------------------------------------------
+
+def obtener_caja_hoy() -> CajaDiaria | None:
+    """Obtiene la caja del día de hoy (si existe)."""
+    session = SessionLocal()
+    try:
+        return session.query(CajaDiaria).filter_by(fecha=date.today()).first()
+    finally:
+        session.close()
+
+
+def caja_abierta_hoy() -> bool:
+    """Retorna True si hay una caja abierta hoy."""
+    caja = obtener_caja_hoy()
+    return caja is not None and caja.estado == "abierta"
+
+
+def abrir_caja(usuario_id: int, monto_apertura: float,
+               observaciones: str = "") -> CajaDiaria:
+    """Abre la caja del día."""
+    session = SessionLocal()
+    try:
+        existente = session.query(CajaDiaria).filter_by(fecha=date.today()).first()
+        if existente:
+            raise ValueError("Ya existe una caja para hoy")
+
+        caja = CajaDiaria(
+            fecha=date.today(),
+            usuario_apertura_id=usuario_id,
+            monto_apertura=monto_apertura,
+            estado="abierta",
+            observaciones_apertura=observaciones,
+        )
+        session.add(caja)
+        session.flush()
+        registrar_auditoria(
+            session, usuario_id, "ABRIR_CAJA", "cajas_diarias",
+            registro_id=caja.id,
+            valor_nuevo={"monto_apertura": monto_apertura, "fecha": str(date.today())},
+        )
+        session.commit()
+        session.refresh(caja)
+        return caja
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def cerrar_caja(usuario_id: int, monto_cierre: float,
+                observaciones: str = "") -> CajaDiaria:
+    """Cierra la caja del día."""
+    session = SessionLocal()
+    try:
+        caja = session.query(CajaDiaria).filter_by(fecha=date.today()).first()
+        if not caja:
+            raise ValueError("No hay caja abierta hoy")
+        if caja.estado == "cerrada":
+            raise ValueError("La caja ya fue cerrada")
+
+        caja.estado = "cerrada"
+        caja.usuario_cierre_id = usuario_id
+        caja.monto_cierre = monto_cierre
+        caja.hora_cierre = datetime.utcnow()
+        caja.observaciones_cierre = observaciones
+
+        registrar_auditoria(
+            session, usuario_id, "CERRAR_CAJA", "cajas_diarias",
+            registro_id=caja.id,
+            valor_anterior={"estado": "abierta"},
+            valor_nuevo={"estado": "cerrada", "monto_cierre": monto_cierre},
+        )
+        session.commit()
+        session.refresh(caja)
+        return caja
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def registrar_retiro(usuario_id: int, monto: float,
+                     motivo: str = "") -> RetiroEfectivo:
+    """Registra un retiro de efectivo de la caja del día."""
+    session = SessionLocal()
+    try:
+        caja = session.query(CajaDiaria).filter_by(fecha=date.today()).first()
+        if not caja or caja.estado != "abierta":
+            raise ValueError("No hay caja abierta hoy")
+
+        retiro = RetiroEfectivo(
+            caja_id=caja.id,
+            usuario_id=usuario_id,
+            monto=monto,
+            motivo=motivo,
+        )
+        session.add(retiro)
+        session.flush()
+        registrar_auditoria(
+            session, usuario_id, "RETIRO_EFECTIVO", "retiros_efectivo",
+            registro_id=retiro.id,
+            valor_nuevo={"monto": monto, "motivo": motivo},
+        )
+        session.commit()
+        session.refresh(retiro)
+        return retiro
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def listar_retiros(caja_id: int):
+    session = SessionLocal()
+    try:
+        return (
+            session.query(RetiroEfectivo)
+            .filter_by(caja_id=caja_id)
+            .order_by(RetiroEfectivo.fecha.desc())
+            .all()
+        )
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Reportes
+# ---------------------------------------------------------------------------
+
+def reporte_ventas_periodo(
+    fecha_desde: date, fecha_hasta: date, agrupacion: str = "dia"
+) -> list[dict]:
+    """Ventas agrupadas por día, semana o mes."""
+    from datetime import timedelta
+    session = SessionLocal()
+    try:
+        inicio = datetime.combine(fecha_desde, datetime.min.time())
+        fin = datetime.combine(fecha_hasta, datetime.max.time())
+
+        ventas = (
+            session.query(Venta)
+            .filter(Venta.fecha >= inicio, Venta.fecha <= fin)
+            .filter(Venta.anulada == False)
+            .order_by(Venta.fecha)
+            .all()
+        )
+
+        grupos = {}
+        for v in ventas:
+            if agrupacion == "dia":
+                key = v.fecha.strftime("%Y-%m-%d")
+            elif agrupacion == "semana":
+                # Lunes de la semana
+                lunes = v.fecha.date() - timedelta(days=v.fecha.weekday())
+                key = lunes.strftime("%Y-%m-%d")
+            else:  # mes
+                key = v.fecha.strftime("%Y-%m")
+
+            if key not in grupos:
+                grupos[key] = {"periodo": key, "total": 0.0, "cantidad": 0}
+            grupos[key]["total"] += v.total
+            grupos[key]["cantidad"] += 1
+
+        return sorted(grupos.values(), key=lambda x: x["periodo"])
+    finally:
+        session.close()
+
+
+def reporte_productos_vendidos(
+    fecha_desde: date, fecha_hasta: date, limit: int = 10
+) -> list[dict]:
+    """Top productos vendidos por cantidad y por monto."""
+    session = SessionLocal()
+    try:
+        inicio = datetime.combine(fecha_desde, datetime.min.time())
+        fin = datetime.combine(fecha_hasta, datetime.max.time())
+
+        resultados = (
+            session.query(
+                DetalleVenta.producto_id,
+                Producto.nombre,
+                func.sum(DetalleVenta.cantidad).label("total_cantidad"),
+                func.sum(DetalleVenta.subtotal).label("total_monto"),
+            )
+            .join(Producto, DetalleVenta.producto_id == Producto.id)
+            .join(Venta, DetalleVenta.venta_id == Venta.id)
+            .filter(Venta.fecha >= inicio, Venta.fecha <= fin)
+            .filter(Venta.anulada == False)
+            .group_by(DetalleVenta.producto_id, Producto.nombre)
+            .order_by(func.sum(DetalleVenta.subtotal).desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "producto": r.nombre,
+                "cantidad": float(r.total_cantidad),
+                "monto": float(r.total_monto),
+            }
+            for r in resultados
+        ]
+    finally:
+        session.close()
+
+
+def reporte_ganancia(
+    fecha_desde: date, fecha_hasta: date, agrupacion: str = "dia"
+) -> list[dict]:
+    """Ganancia real: ventas - costo mercadería - gastos, agrupada por período."""
+    from datetime import timedelta
+    session = SessionLocal()
+    try:
+        inicio = datetime.combine(fecha_desde, datetime.min.time())
+        fin = datetime.combine(fecha_hasta, datetime.max.time())
+
+        # Obtener ventas con detalle
+        ventas = (
+            session.query(Venta)
+            .filter(Venta.fecha >= inicio, Venta.fecha <= fin)
+            .filter(Venta.anulada == False)
+            .all()
+        )
+
+        # Obtener gastos
+        gastos = (
+            session.query(Gasto)
+            .filter(Gasto.activo == True)
+            .filter(Gasto.fecha >= inicio, Gasto.fecha <= fin)
+            .all()
+        )
+
+        grupos = {}
+
+        for v in ventas:
+            if agrupacion == "dia":
+                key = v.fecha.strftime("%Y-%m-%d")
+            elif agrupacion == "semana":
+                lunes = v.fecha.date() - timedelta(days=v.fecha.weekday())
+                key = lunes.strftime("%Y-%m-%d")
+            else:
+                key = v.fecha.strftime("%Y-%m")
+
+            if key not in grupos:
+                grupos[key] = {"periodo": key, "ventas": 0.0, "costo": 0.0, "gastos": 0.0}
+            grupos[key]["ventas"] += v.total
+
+            # Calcular costo de mercadería
+            detalles = session.query(DetalleVenta).filter_by(venta_id=v.id).all()
+            for d in detalles:
+                if d.costo_unitario is not None:
+                    grupos[key]["costo"] += d.costo_unitario * d.cantidad
+                else:
+                    # Fallback: usar precio_costo actual del producto
+                    prod = session.query(Producto).get(d.producto_id)
+                    if prod:
+                        if d.fraccion_id:
+                            frac = session.query(Fraccion).get(d.fraccion_id)
+                            if frac:
+                                costo = (prod.precio_costo / prod.contenido_total) * frac.cantidad
+                            else:
+                                costo = prod.precio_costo
+                        else:
+                            costo = prod.precio_costo
+                        grupos[key]["costo"] += costo * d.cantidad
+
+        for g in gastos:
+            if agrupacion == "dia":
+                key = g.fecha.strftime("%Y-%m-%d")
+            elif agrupacion == "semana":
+                lunes = g.fecha.date() - timedelta(days=g.fecha.weekday())
+                key = lunes.strftime("%Y-%m-%d")
+            else:
+                key = g.fecha.strftime("%Y-%m")
+
+            if key not in grupos:
+                grupos[key] = {"periodo": key, "ventas": 0.0, "costo": 0.0, "gastos": 0.0}
+            grupos[key]["gastos"] += g.monto
+
+        # Calcular ganancia
+        resultado = []
+        for g in sorted(grupos.values(), key=lambda x: x["periodo"]):
+            g["ganancia_bruta"] = round(g["ventas"] - g["costo"], 2)
+            g["ganancia_neta"] = round(g["ventas"] - g["costo"] - g["gastos"], 2)
+            g["margen_pct"] = round(
+                (g["ganancia_bruta"] / g["ventas"] * 100) if g["ventas"] > 0 else 0, 1
+            )
+            resultado.append(g)
+
+        return resultado
+    finally:
+        session.close()
+
+
+def reporte_stock_valorizado() -> dict:
+    """Stock valorizado por categoría."""
+    session = SessionLocal()
+    try:
+        productos = (
+            session.query(Producto)
+            .filter(Producto.activo == True)
+            .all()
+        )
+
+        por_categoria = {}
+        total = 0.0
+
+        for p in productos:
+            cat_nombre = p.categoria.nombre if p.categoria else "Sin categoría"
+            valor = p.stock_actual * p.precio_costo
+
+            if cat_nombre not in por_categoria:
+                por_categoria[cat_nombre] = 0.0
+            por_categoria[cat_nombre] += valor
+            total += valor
+
+        return {
+            "por_categoria": por_categoria,
+            "total": round(total, 2),
+        }
     finally:
         session.close()
