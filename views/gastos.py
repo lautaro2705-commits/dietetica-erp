@@ -5,6 +5,7 @@ views/gastos.py - Registro y listado de gastos operativos.
 import streamlit as st
 from datetime import date, timedelta
 from controllers import registrar_gasto, listar_gastos
+from utils.cache import cached_query, invalidar_cache_gastos, TTL_CORTO
 
 
 CATEGORIAS_GASTO = [
@@ -43,6 +44,7 @@ def _render_nuevo_gasto():
                         st.session_state["user_id"],
                         descripcion, monto, categoria,
                     )
+                    invalidar_cache_gastos()
                     st.success(f"Gasto registrado: ${monto:,.2f} — {descripcion}")
                     st.rerun()
                 except Exception as e:
@@ -56,7 +58,10 @@ def _render_historial():
     with col2:
         fecha_hasta = st.date_input("Hasta", value=date.today(), key="gasto_hasta")
 
-    gastos = listar_gastos(fecha_desde, fecha_hasta)
+    gastos = cached_query(
+        f"gastos_{fecha_desde}_{fecha_hasta}",
+        listar_gastos, TTL_CORTO, fecha_desde, fecha_hasta,
+    )
 
     if not gastos:
         st.info("No hay gastos en el período seleccionado.")

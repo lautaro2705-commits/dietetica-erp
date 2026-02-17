@@ -8,6 +8,7 @@ from controllers import (
     aumento_masivo_precios,
 )
 from auth import require_admin
+from utils.cache import cached_query, invalidar_cache_productos, TTL_MEDIO, TTL_LARGO
 
 
 def render():
@@ -22,8 +23,8 @@ def render():
         "**Categoría** y/o **Proveedor**."
     )
 
-    categorias = listar_categorias()
-    proveedores = listar_proveedores()
+    categorias = cached_query("categorias_activas", listar_categorias, TTL_LARGO)
+    proveedores = cached_query("proveedores_activos", listar_proveedores, TTL_LARGO)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -51,7 +52,7 @@ def render():
     cat_id = cat_options[cat_sel]
     prov_id = prov_options[prov_sel]
 
-    productos = listar_productos()
+    productos = cached_query("productos_activos", listar_productos, TTL_MEDIO)
     if cat_id:
         productos = [p for p in productos if p.categoria_id == cat_id]
     if prov_id:
@@ -104,6 +105,7 @@ def render():
                         proveedor_id=prov_id,
                         campos=campos,
                     )
+                    invalidar_cache_productos()
                     st.session_state.pop("confirmar_aumento", None)
                     st.success(f"{count} productos actualizados correctamente.")
                     st.rerun()

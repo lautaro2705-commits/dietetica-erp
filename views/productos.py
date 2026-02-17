@@ -12,6 +12,10 @@ from controllers import (
     importar_productos,
 )
 from auth import require_admin
+from utils.cache import (
+    cached_query, invalidar_cache_productos, invalidar_cache_catalogos,
+    TTL_MEDIO, TTL_LARGO,
+)
 
 
 def render():
@@ -44,7 +48,7 @@ def render():
 
 
 def _render_listado():
-    productos = listar_productos()
+    productos = cached_query("productos_activos", listar_productos, TTL_MEDIO)
     if not productos:
         st.info("No hay productos cargados.")
         return
@@ -87,7 +91,7 @@ def _render_listado():
             )
 
             # Fracciones
-            fracciones = listar_fracciones(prod.id)
+            fracciones = cached_query(f"fracciones_{prod.id}", listar_fracciones, TTL_MEDIO, prod.id)
             if fracciones:
                 st.markdown("**Fracciones:**")
                 frac_data = []
@@ -113,6 +117,7 @@ def _render_listado():
                     if st.button(f"Desactivar", key=f"desact_{prod.id}", type="secondary"):
                         try:
                             desactivar_producto(st.session_state["user_id"], prod.id)
+                            invalidar_cache_productos()
                             st.success(f"'{prod.nombre}' desactivado.")
                             st.rerun()
                         except Exception as e:
@@ -122,8 +127,8 @@ def _render_listado():
 def _render_editar_producto(prod):
     """Popover para editar un producto existente."""
     with st.popover("✏️ Editar"):
-        categorias = listar_categorias()
-        proveedores = listar_proveedores()
+        categorias = cached_query("categorias_activas", listar_categorias, TTL_LARGO)
+        proveedores = cached_query("proveedores_activos", listar_proveedores, TTL_LARGO)
 
         cat_options = {"Sin categoría": None}
         for c in categorias:
@@ -233,6 +238,7 @@ def _render_editar_producto(prod):
                         stock_minimo=stock_minimo,
                         fecha_vencimiento=fecha_venc,
                     )
+                    invalidar_cache_productos()
                     st.success(f"Producto '{nombre}' actualizado.")
                     st.rerun()
                 except Exception as e:
@@ -261,6 +267,7 @@ def _render_agregar_fraccion(prod):
                             prod.id, nombre, cantidad,
                             precio if precio > 0 else None,
                         )
+                        invalidar_cache_productos()
                         st.success(f"Fracción '{nombre}' creada.")
                         st.rerun()
                     except Exception as e:
@@ -268,8 +275,8 @@ def _render_agregar_fraccion(prod):
 
 
 def _render_nuevo_producto():
-    categorias = listar_categorias()
-    proveedores = listar_proveedores()
+    categorias = cached_query("categorias_activas", listar_categorias, TTL_LARGO)
+    proveedores = cached_query("proveedores_activos", listar_proveedores, TTL_LARGO)
 
     with st.form("nuevo_producto"):
         col1, col2 = st.columns(2)
@@ -332,6 +339,7 @@ def _render_nuevo_producto():
                         st.session_state["user_id"],
                         **kwargs,
                     )
+                    invalidar_cache_productos()
                     st.success(f"Producto '{nombre}' creado exitosamente.")
                     st.rerun()
                 except Exception as e:
@@ -339,7 +347,7 @@ def _render_nuevo_producto():
 
 
 def _render_categorias():
-    cats = listar_categorias()
+    cats = cached_query("categorias_activas", listar_categorias, TTL_LARGO)
     if cats:
         st.dataframe(
             [{"ID": c.id, "Nombre": c.nombre} for c in cats],
@@ -353,6 +361,7 @@ def _render_categorias():
                 if nombre:
                     try:
                         crear_categoria(st.session_state["user_id"], nombre)
+                        invalidar_cache_catalogos()
                         st.success(f"Categoría '{nombre}' creada.")
                         st.rerun()
                     except Exception as e:
@@ -360,7 +369,7 @@ def _render_categorias():
 
 
 def _render_proveedores():
-    provs = listar_proveedores()
+    provs = cached_query("proveedores_activos", listar_proveedores, TTL_LARGO)
     if provs:
         st.dataframe(
             [{"ID": p.id, "Nombre": p.nombre, "Contacto": p.contacto,
@@ -383,6 +392,7 @@ def _render_proveedores():
                         crear_proveedor(
                             st.session_state["user_id"], nombre, contacto, telefono
                         )
+                        invalidar_cache_catalogos()
                         st.success(f"Proveedor '{nombre}' creado.")
                         st.rerun()
                     except Exception as e:
@@ -476,5 +486,7 @@ def _render_importar():
                     st.caption(f"⚠️ {err}")
 
         if resultado["creados"] > 0 or resultado["actualizados"] > 0:
+            invalidar_cache_productos()
+            invalidar_cache_catalogos()
             st.success("Importación completada.")
             st.rerun()

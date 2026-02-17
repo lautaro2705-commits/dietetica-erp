@@ -71,7 +71,9 @@ def require_admin():
 
 
 def logout():
-    """Limpia la sesión."""
+    """Limpia la sesión y el caché."""
+    from utils.cache import invalidar_todo
+    invalidar_todo()
     for key in ["user_id", "username", "nombre", "rol", "logged_in"]:
         st.session_state.pop(key, None)
     st.rerun()

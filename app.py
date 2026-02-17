@@ -16,8 +16,10 @@ from database import init_db
 from auth import require_login, require_admin, logout, render_cambiar_password
 from views import productos, ventas, compras, stock, precios, gastos, caja, auditoria, admin, clientes, reportes
 
-# Inicializar base de datos
-init_db()
+# Inicializar base de datos (solo una vez por sesión)
+if "_db_initialized" not in st.session_state:
+    init_db()
+    st.session_state["_db_initialized"] = True
 
 # --- Guard: Login ---
 if not require_login():

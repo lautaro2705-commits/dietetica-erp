@@ -15,13 +15,18 @@ from controllers import (
 )
 from utils.ticket_pdf import generar_ticket_pdf, generar_link_whatsapp
 from utils.barcode_scanner import get_barcode_scanner_html, get_scanner_height
+from utils.cache import (
+    cached_query, invalidar_cache_ventas, invalidar_cache_productos,
+    invalidar_cache_clientes, TTL_CORTO, TTL_MEDIO,
+)
 
 
 def render():
     st.header("Ventas")
 
-    # Bloqueo por caja cerrada
-    if not caja_abierta_hoy():
+    # Bloqueo por caja cerrada (cacheado 15s)
+    caja_ok = cached_query("caja_abierta", caja_abierta_hoy, TTL_CORTO)
+    if not caja_ok:
         st.warning(
             "⚠️ La caja no está abierta. Abrí la caja en **Caja Diaria** "
             "antes de registrar ventas."
@@ -30,15 +35,15 @@ def render():
     tab_nueva, tab_historial = st.tabs(["Nueva Venta", "Historial"])
 
     with tab_nueva:
-        _render_nueva_venta()
+        _render_nueva_venta(caja_ok)
 
     with tab_historial:
         _render_historial()
 
 
-def _render_nueva_venta():
+def _render_nueva_venta(caja_ok: bool = False):
     # Bloquear si caja no está abierta
-    if not caja_abierta_hoy():
+    if not caja_ok:
         st.info("Abrí la caja diaria para poder registrar ventas.")
         return
 
@@ -46,7 +51,8 @@ def _render_nueva_venta():
     if "carrito" not in st.session_state:
         st.session_state["carrito"] = []
 
-    productos = listar_productos()
+    # Queries cacheadas — evita re-queries en cada rerun
+    productos = cached_query("productos_activos", listar_productos, TTL_MEDIO)
     if not productos:
         st.info("No hay productos cargados. Cargá productos primero.")
         return
@@ -66,7 +72,7 @@ def _render_nueva_venta():
             }[x],
         )
     with col_cli:
-        clientes = listar_clientes()
+        clientes = cached_query("clientes_activos", listar_clientes, TTL_MEDIO)
         cli_options = {"Sin cliente": None}
         for c in clientes:
             cli_options[f"{c.nombre}"] = c.id
@@ -120,7 +126,9 @@ def _render_nueva_venta():
     prod = prod_options[prod_sel] if prod_sel else None
 
     if prod:
-        fracciones = listar_fracciones(prod.id)
+        fracciones = cached_query(
+            f"fracciones_{prod.id}", listar_fracciones, TTL_MEDIO, prod.id,
+        )
         frac_options = {"Bulto completo": None}
         for f in fracciones:
             precio = calcular_precio_fraccion(prod, f)
@@ -220,6 +228,11 @@ def _render_nueva_venta():
                         metodo_pago=metodo_pago,
                         cliente_id=cliente_id,
                     )
+                    # Invalidar caches afectadas por la venta
+                    invalidar_cache_ventas()
+                    invalidar_cache_productos()
+                    if cliente_id:
+                        invalidar_cache_clientes()
                     st.session_state["carrito"] = []
                     st.success(f"Venta #{venta.id} registrada. Total: ${venta.total:,.2f}")
 
@@ -265,7 +278,10 @@ def _render_historial():
     with col2:
         fecha_hasta = st.date_input("Hasta", value=date.today())
 
-    ventas = listar_ventas(fecha_desde, fecha_hasta)
+    ventas = cached_query(
+        f"ventas_{fecha_desde}_{fecha_hasta}",
+        listar_ventas, TTL_CORTO, fecha_desde, fecha_hasta,
+    )
 
     if not ventas:
         st.info("No hay ventas en el período seleccionado.")
@@ -359,6 +375,9 @@ def _render_devoluciones(venta, detalles):
                         venta.id,
                         motivo,
                     )
+                    invalidar_cache_ventas()
+                    invalidar_cache_productos()
+                    invalidar_cache_clientes()
                     st.success(f"Venta #{venta.id} anulada correctamente.")
                     st.rerun()
                 except Exception as e:
@@ -401,6 +420,9 @@ def _render_devoluciones(venta, detalles):
                         items_devolver,
                         motivo_dev,
                     )
+                    invalidar_cache_ventas()
+                    invalidar_cache_productos()
+                    invalidar_cache_clientes()
                     st.success(
                         f"Devolución registrada. "
                         f"Monto devuelto: ${dev.monto_devuelto:,.2f}"

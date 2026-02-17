@@ -12,6 +12,7 @@ from controllers import (
     resetear_password,
 )
 from auth import require_admin
+from utils.cache import cached_query, invalidar_cache_catalogos, invalidar_todo, TTL_LARGO
 
 
 def render():
@@ -31,7 +32,7 @@ def render():
 
 
 def _render_usuarios():
-    usuarios = listar_usuarios()
+    usuarios = cached_query("usuarios_todos", listar_usuarios, TTL_LARGO)
 
     if usuarios:
         data = []
@@ -53,6 +54,7 @@ def _render_usuarios():
             if st.button("Cambiar estado"):
                 try:
                     desactivar_usuario(st.session_state["user_id"], toggle_options[user_sel])
+                    invalidar_cache_catalogos()
                     st.success("Estado actualizado.")
                     st.rerun()
                 except Exception as e:
@@ -102,6 +104,7 @@ def _render_usuarios():
                         st.session_state["user_id"],
                         username, password, nombre, rol,
                     )
+                    invalidar_cache_catalogos()
                     st.success(f"Usuario '{username}' creado exitosamente.")
                     st.rerun()
                 except Exception as e:
@@ -202,6 +205,7 @@ def _render_backup():
                         )
                         total = sum(resultado.values())
                         if total > 0:
+                            invalidar_todo()
                             st.success(f"Restauración completada: {total} registros importados.")
                             with st.expander("Detalle por tabla"):
                                 for tabla, count in resultado.items():

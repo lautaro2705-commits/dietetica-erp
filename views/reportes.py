@@ -13,6 +13,7 @@ from controllers import (
     reporte_ganancia,
     reporte_stock_valorizado,
 )
+from utils.cache import cached_query, TTL_CORTO, TTL_MEDIO
 
 
 def render():
@@ -59,7 +60,10 @@ def _render_ventas_periodo():
             key="rp_agrup",
         )
 
-    datos = reporte_ventas_periodo(fecha_desde, fecha_hasta, agrupacion)
+    datos = cached_query(
+        f"reporte_ventas_{fecha_desde}_{fecha_hasta}_{agrupacion}",
+        reporte_ventas_periodo, TTL_CORTO, fecha_desde, fecha_hasta, agrupacion,
+    )
 
     if not datos:
         st.info("No hay datos para el período seleccionado.")
@@ -121,7 +125,10 @@ def _render_productos_vendidos():
     with col2:
         fecha_hasta = st.date_input("Hasta", value=date.today(), key="pp_hasta")
 
-    datos = reporte_productos_vendidos(fecha_desde, fecha_hasta, limit=10)
+    datos = cached_query(
+        f"reporte_productos_{fecha_desde}_{fecha_hasta}",
+        reporte_productos_vendidos, TTL_CORTO, fecha_desde, fecha_hasta, 10,
+    )
 
     if not datos:
         st.info("No hay datos para el período seleccionado.")
@@ -196,7 +203,10 @@ def _render_ganancia():
             key="rg_agrup",
         )
 
-    datos = reporte_ganancia(fecha_desde, fecha_hasta, agrupacion)
+    datos = cached_query(
+        f"reporte_ganancia_{fecha_desde}_{fecha_hasta}_{agrupacion}",
+        reporte_ganancia, TTL_CORTO, fecha_desde, fecha_hasta, agrupacion,
+    )
 
     if not datos:
         st.info("No hay datos para el período seleccionado.")
@@ -272,7 +282,7 @@ def _render_ganancia():
 # ---------------------------------------------------------------------------
 
 def _render_stock_valorizado():
-    datos = reporte_stock_valorizado()
+    datos = cached_query("reporte_stock_valorizado", reporte_stock_valorizado, TTL_MEDIO)
 
     st.metric("💰 Total Invertido en Mercadería", f"${datos['total']:,.2f}")
 
