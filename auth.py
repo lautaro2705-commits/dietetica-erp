@@ -26,7 +26,7 @@ def show_login_form():
     st.markdown(
         """
         <div style="text-align:center; padding: 2rem 0 1rem 0;">
-            <h1 style="margin-bottom:0.2rem;">&#127793; Dietética ERP</h1>
+            <h1 style="margin-bottom:0.2rem;">&#127793; Aquí y Ahora</h1>
             <p style="color:#888; font-size:1.1rem;">Sistema de Gestión Mayorista</p>
         </div>
         """,
