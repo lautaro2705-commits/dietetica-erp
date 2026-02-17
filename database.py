@@ -196,10 +196,12 @@ class Venta(Base):
     metodo_pago = Column(String(30), nullable=False, default="efectivo")  # efectivo | transferencia | cuenta_corriente
     total = Column(Float, nullable=False, default=0.0)
     observaciones = Column(Text, default="")
+    anulada = Column(Boolean, default=False)
 
     usuario = relationship("Usuario")
     cliente = relationship("Cliente")
     detalles = relationship("DetalleVenta", back_populates="venta")
+    devoluciones = relationship("Devolucion", back_populates="venta")
 
 
 class DetalleVenta(Base):
@@ -212,6 +214,7 @@ class DetalleVenta(Base):
     cantidad = Column(Float, nullable=False, default=1.0)
     precio_unitario = Column(Float, nullable=False)
     subtotal = Column(Float, nullable=False)
+    costo_unitario = Column(Float, nullable=True)  # costo al momento de la venta (para ganancia real)
 
     venta = relationship("Venta", back_populates="detalles")
     producto = relationship("Producto")
@@ -293,40 +296,90 @@ class DetalleCompra(Base):
     producto = relationship("Producto")
 
 
+class Devolucion(Base):
+    """Devoluciones y anulaciones de ventas."""
+    __tablename__ = "devoluciones"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    venta_id = Column(Integer, ForeignKey("ventas.id"), nullable=False)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    fecha = Column(DateTime, default=datetime.utcnow)
+    motivo = Column(String(300), default="")
+    tipo = Column(String(30), nullable=False)  # anulacion_total | devolucion_parcial
+    monto_devuelto = Column(Float, nullable=False, default=0.0)
+
+    venta = relationship("Venta", back_populates="devoluciones")
+    usuario = relationship("Usuario")
+
+
+class CajaDiaria(Base):
+    """Apertura y cierre de caja diaria."""
+    __tablename__ = "cajas_diarias"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fecha = Column(Date, unique=True, nullable=False)
+    usuario_apertura_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    usuario_cierre_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
+    monto_apertura = Column(Float, nullable=False, default=0.0)
+    monto_cierre = Column(Float, nullable=True)
+    estado = Column(String(20), nullable=False, default="abierta")  # abierta | cerrada
+    hora_apertura = Column(DateTime, default=datetime.utcnow)
+    hora_cierre = Column(DateTime, nullable=True)
+    observaciones_apertura = Column(Text, default="")
+    observaciones_cierre = Column(Text, default="")
+
+    usuario_apertura = relationship("Usuario", foreign_keys=[usuario_apertura_id])
+    usuario_cierre = relationship("Usuario", foreign_keys=[usuario_cierre_id])
+    retiros = relationship("RetiroEfectivo", back_populates="caja")
+
+
+class RetiroEfectivo(Base):
+    """Retiros de efectivo durante el día."""
+    __tablename__ = "retiros_efectivo"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    caja_id = Column(Integer, ForeignKey("cajas_diarias.id"), nullable=False)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    monto = Column(Float, nullable=False)
+    motivo = Column(String(300), default="")
+    fecha = Column(DateTime, default=datetime.utcnow)
+
+    caja = relationship("CajaDiaria", back_populates="retiros")
+    usuario = relationship("Usuario")
+
+
 # ---------------------------------------------------------------------------
 # Inicialización
 # ---------------------------------------------------------------------------
 
 def _migrate_columns():
     """Agrega columnas nuevas a tablas existentes (mini-migración)."""
+    _text = __import__("sqlalchemy").text
     insp = inspect(engine)
     with engine.connect() as conn:
         # Producto.fecha_vencimiento
         if "productos" in insp.get_table_names():
             cols = [c["name"] for c in insp.get_columns("productos")]
             if "fecha_vencimiento" not in cols:
-                conn.execute(
-                    __import__("sqlalchemy").text(
-                        "ALTER TABLE productos ADD COLUMN fecha_vencimiento DATE"
-                    )
-                )
+                conn.execute(_text("ALTER TABLE productos ADD COLUMN fecha_vencimiento DATE"))
                 conn.commit()
-        # Venta.metodo_pago y Venta.cliente_id
+        # Venta.metodo_pago, Venta.cliente_id, Venta.anulada
         if "ventas" in insp.get_table_names():
             cols = [c["name"] for c in insp.get_columns("ventas")]
             if "metodo_pago" not in cols:
-                conn.execute(
-                    __import__("sqlalchemy").text(
-                        "ALTER TABLE ventas ADD COLUMN metodo_pago VARCHAR(30) DEFAULT 'efectivo'"
-                    )
-                )
+                conn.execute(_text("ALTER TABLE ventas ADD COLUMN metodo_pago VARCHAR(30) DEFAULT 'efectivo'"))
                 conn.commit()
             if "cliente_id" not in cols:
-                conn.execute(
-                    __import__("sqlalchemy").text(
-                        "ALTER TABLE ventas ADD COLUMN cliente_id INTEGER"
-                    )
-                )
+                conn.execute(_text("ALTER TABLE ventas ADD COLUMN cliente_id INTEGER"))
+                conn.commit()
+            if "anulada" not in cols:
+                conn.execute(_text("ALTER TABLE ventas ADD COLUMN anulada BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+        # DetalleVenta.costo_unitario
+        if "detalle_ventas" in insp.get_table_names():
+            cols = [c["name"] for c in insp.get_columns("detalle_ventas")]
+            if "costo_unitario" not in cols:
+                conn.execute(_text("ALTER TABLE detalle_ventas ADD COLUMN costo_unitario FLOAT"))
                 conn.commit()
 
 

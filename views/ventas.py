@@ -1,5 +1,5 @@
 """
-views/ventas.py - Registro de ventas e historial.
+views/ventas.py - Registro de ventas, historial, tickets PDF y devoluciones.
 """
 
 import streamlit as st
@@ -8,12 +8,21 @@ from datetime import date, timedelta
 from controllers import (
     listar_productos, listar_fracciones, calcular_precio_fraccion,
     procesar_venta, listar_ventas, obtener_detalle_venta,
-    listar_clientes,
+    listar_clientes, caja_abierta_hoy,
+    anular_venta, devolucion_parcial,
 )
+from utils.ticket_pdf import generar_ticket_pdf, generar_link_whatsapp
 
 
 def render():
     st.header("Ventas")
+
+    # Bloqueo por caja cerrada
+    if not caja_abierta_hoy():
+        st.warning(
+            "⚠️ La caja no está abierta. Abrí la caja en **Caja Diaria** "
+            "antes de registrar ventas."
+        )
 
     tab_nueva, tab_historial = st.tabs(["Nueva Venta", "Historial"])
 
@@ -25,6 +34,11 @@ def render():
 
 
 def _render_nueva_venta():
+    # Bloquear si caja no está abierta
+    if not caja_abierta_hoy():
+        st.info("Abrí la caja diaria para poder registrar ventas.")
+        return
+
     # Inicializar carrito en session_state
     if "carrito" not in st.session_state:
         st.session_state["carrito"] = []
@@ -158,13 +172,40 @@ def _render_nueva_venta():
                     )
                     st.session_state["carrito"] = []
                     st.success(f"Venta #{venta.id} registrada. Total: ${venta.total:,.2f}")
-                    st.rerun()
+
+                    # Ticket PDF + WhatsApp
+                    _render_ticket_post_venta(venta.id, venta.total)
+
                 except Exception as e:
                     st.error(f"Error al procesar venta: {e}")
 
         if st.button("Vaciar carrito"):
             st.session_state["carrito"] = []
             st.rerun()
+
+
+def _render_ticket_post_venta(venta_id: int, total: float):
+    """Muestra botones de ticket PDF y WhatsApp post-confirmación."""
+    try:
+        pdf_bytes = generar_ticket_pdf(venta_id)
+        col_pdf, col_wa = st.columns(2)
+        with col_pdf:
+            st.download_button(
+                "📄 Descargar Ticket PDF",
+                data=pdf_bytes,
+                file_name=f"ticket_venta_{venta_id}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        with col_wa:
+            link_wa = generar_link_whatsapp(venta_id, total)
+            st.link_button(
+                "📱 Compartir por WhatsApp",
+                url=link_wa,
+                use_container_width=True,
+            )
+    except Exception as e:
+        st.warning(f"No se pudo generar el ticket: {e}")
 
 
 def _render_historial():
@@ -186,10 +227,13 @@ def _render_historial():
     for v in ventas:
         metodo = getattr(v, "metodo_pago", "efectivo") or "efectivo"
         icon = pago_icons.get(metodo, "")
+        anulada = getattr(v, "anulada", False)
+        anulada_txt = " ❌ ANULADA" if anulada else ""
         cliente_txt = f" | {v.cliente.nombre}" if v.cliente else ""
+
         with st.expander(
             f"Venta #{v.id} | {v.fecha.strftime('%d/%m/%Y %H:%M')} | "
-            f"**${v.total:,.2f}** | {v.tipo.upper()} {icon}{cliente_txt}"
+            f"**${v.total:,.2f}** | {v.tipo.upper()} {icon}{cliente_txt}{anulada_txt}"
         ):
             detalles = obtener_detalle_venta(v.id)
             data = []
@@ -202,6 +246,7 @@ def _render_historial():
                     "Subtotal": f"${d.subtotal:,.2f}",
                 })
             st.dataframe(data, use_container_width=True, hide_index=True)
+
             metodo_label = {"efectivo": "Efectivo", "transferencia": "Transferencia",
                             "cuenta_corriente": "Cuenta Corriente"}
             st.caption(
@@ -210,3 +255,106 @@ def _render_historial():
             )
             if v.observaciones:
                 st.caption(f"Obs: {v.observaciones}")
+
+            # Ticket PDF desde historial
+            col_tk, col_wa = st.columns(2)
+            with col_tk:
+                try:
+                    pdf_bytes = generar_ticket_pdf(v.id)
+                    st.download_button(
+                        "📄 Ticket PDF",
+                        data=pdf_bytes,
+                        file_name=f"ticket_venta_{v.id}.pdf",
+                        mime="application/pdf",
+                        key=f"tk_{v.id}",
+                        use_container_width=True,
+                    )
+                except Exception:
+                    st.caption("No se pudo generar ticket.")
+            with col_wa:
+                link_wa = generar_link_whatsapp(v.id, v.total)
+                st.link_button(
+                    "📱 WhatsApp",
+                    url=link_wa,
+                    key=f"wa_{v.id}",
+                    use_container_width=True,
+                )
+
+            # Devoluciones (solo admin, solo ventas no anuladas)
+            if not anulada and st.session_state.get("rol") == "admin":
+                st.divider()
+                _render_devoluciones(v, detalles)
+
+
+def _render_devoluciones(venta, detalles):
+    """Botones de anulación total y devolución parcial (solo admin)."""
+    col_anular, col_devolver = st.columns(2)
+
+    with col_anular:
+        with st.popover("🚫 Anular Venta", use_container_width=True):
+            st.warning(
+                f"¿Estás seguro de anular la Venta #{venta.id}?\n\n"
+                f"Se reingresará el stock y se revertirá el cobro."
+            )
+            motivo = st.text_input(
+                "Motivo de anulación",
+                key=f"motivo_anular_{venta.id}",
+                max_chars=300,
+            )
+            if st.button("Confirmar Anulación", key=f"btn_anular_{venta.id}",
+                         type="primary"):
+                try:
+                    anular_venta(
+                        st.session_state["user_id"],
+                        venta.id,
+                        motivo,
+                    )
+                    st.success(f"Venta #{venta.id} anulada correctamente.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al anular: {e}")
+
+    with col_devolver:
+        with st.popover("↩️ Devolución Parcial", use_container_width=True):
+            st.info("Seleccioná los items y cantidades a devolver:")
+
+            items_devolver = []
+            for d in detalles:
+                nombre = d.producto.nombre if d.producto else "—"
+                frac_txt = f" ({d.fraccion.nombre})" if d.fraccion else ""
+                cant_devolver = st.number_input(
+                    f"{nombre}{frac_txt} (máx: {d.cantidad:g})",
+                    min_value=0.0,
+                    max_value=float(d.cantidad),
+                    value=0.0,
+                    step=1.0,
+                    key=f"dev_{venta.id}_{d.id}",
+                )
+                if cant_devolver > 0:
+                    items_devolver.append({
+                        "detalle_id": d.id,
+                        "cantidad": cant_devolver,
+                    })
+
+            motivo_dev = st.text_input(
+                "Motivo de devolución",
+                key=f"motivo_dev_{venta.id}",
+                max_chars=300,
+            )
+
+            if st.button("Confirmar Devolución", key=f"btn_dev_{venta.id}",
+                         type="primary", disabled=len(items_devolver) == 0):
+                try:
+                    dev = devolucion_parcial(
+                        st.session_state["user_id"],
+                        venta.id,
+                        items_devolver,
+                        motivo_dev,
+                    )
+                    st.success(
+                        f"Devolución registrada. "
+                        f"Monto devuelto: ${dev.monto_devuelto:,.2f}"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error en devolución: {e}")

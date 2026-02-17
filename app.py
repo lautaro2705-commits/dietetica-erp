@@ -14,7 +14,7 @@ st.set_page_config(
 
 from database import init_db
 from auth import require_login, require_admin, logout
-from views import productos, ventas, compras, stock, precios, gastos, caja, auditoria, admin, clientes
+from views import productos, ventas, compras, stock, precios, gastos, caja, auditoria, admin, clientes, reportes
 
 # Inicializar base de datos
 init_db()
@@ -38,6 +38,7 @@ with st.sidebar:
         "Clientes": "clientes",
         "Caja Diaria": "caja",
         "Gastos": "gastos",
+        "Reportes": "reportes",
     }
     if require_admin():
         paginas["Precios Masivos"] = "precios"
@@ -70,6 +71,8 @@ try:
         gastos.render()
     elif vista == "caja":
         caja.render()
+    elif vista == "reportes":
+        reportes.render()
     elif vista == "auditoria":
         auditoria.render()
     elif vista == "admin":
