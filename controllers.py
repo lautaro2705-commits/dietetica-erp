@@ -12,6 +12,7 @@ from database import (
     SessionLocal, Producto, Fraccion, Venta, DetalleVenta,
     MovimientoStock, Auditoria, Gasto, Categoria, Proveedor,
     Usuario, hash_password, Compra, DetalleCompra,
+    Cliente, MovimientoCuenta,
 )
 
 
@@ -263,6 +264,8 @@ def procesar_venta(
     tipo: str,
     items: list[dict],
     observaciones: str = "",
+    metodo_pago: str = "efectivo",
+    cliente_id: int | None = None,
 ) -> Venta:
     """Procesa una venta completa.
 
@@ -276,6 +279,8 @@ def procesar_venta(
         venta = Venta(
             usuario_id=usuario_id,
             tipo=tipo,
+            metodo_pago=metodo_pago,
+            cliente_id=cliente_id,
             observaciones=observaciones,
         )
         session.add(venta)
@@ -338,10 +343,26 @@ def procesar_venta(
 
         venta.total = round(total, 2)
 
+        # Cuenta corriente: si paga en cta cte, cargar al cliente
+        if metodo_pago == "cuenta_corriente" and cliente_id:
+            cliente = session.query(Cliente).get(cliente_id)
+            if cliente:
+                cliente.saldo_cuenta_corriente += venta.total
+                mov_cc = MovimientoCuenta(
+                    cliente_id=cliente_id,
+                    tipo="cargo",
+                    monto=venta.total,
+                    referencia=f"Venta #{venta.id}",
+                    usuario_id=usuario_id,
+                )
+                session.add(mov_cc)
+
         registrar_auditoria(
             session, usuario_id, "VENTA", "ventas",
             registro_id=venta.id,
             valor_nuevo={"tipo": tipo, "total": venta.total,
+                         "metodo_pago": metodo_pago,
+                         "cliente_id": cliente_id,
                          "items": len(items)},
         )
         session.commit()
@@ -514,12 +535,31 @@ def resumen_caja(fecha: date | None = None):
             .filter(Venta.fecha >= inicio, Venta.fecha <= fin)
             .scalar()
         )
+
+        # Desglose por método de pago
+        metodos = ["efectivo", "transferencia", "cuenta_corriente"]
+        desglose = {}
+        for m in metodos:
+            val = (
+                session.query(func.coalesce(func.sum(Venta.total), 0.0))
+                .filter(Venta.fecha >= inicio, Venta.fecha <= fin)
+                .filter(Venta.metodo_pago == m)
+                .scalar()
+            )
+            desglose[m] = float(val)
+
+        # Cobrado real = todo menos cuenta corriente
+        cobrado_real = desglose.get("efectivo", 0) + desglose.get("transferencia", 0)
+
         return {
             "fecha": fecha,
             "total_ventas": float(total_ventas),
             "total_gastos": float(total_gastos),
             "balance": float(total_ventas) - float(total_gastos),
+            "cobrado_real": cobrado_real,
+            "balance_real": cobrado_real - float(total_gastos),
             "cant_ventas": int(cant_ventas),
+            "desglose_pago": desglose,
         }
     finally:
         session.close()
@@ -731,6 +771,124 @@ def obtener_detalle_compra(compra_id: int):
         return (
             session.query(DetalleCompra)
             .filter_by(compra_id=compra_id)
+            .all()
+        )
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Clientes y Cuenta Corriente
+# ---------------------------------------------------------------------------
+
+def crear_cliente(usuario_id: int, nombre: str, cuit: str = "",
+                  telefono: str = "", email: str = "",
+                  direccion: str = "") -> Cliente:
+    session = SessionLocal()
+    try:
+        cliente = Cliente(
+            nombre=nombre, cuit=cuit, telefono=telefono,
+            email=email, direccion=direccion,
+        )
+        session.add(cliente)
+        session.flush()
+        registrar_auditoria(
+            session, usuario_id, "CREAR", "clientes",
+            registro_id=cliente.id,
+            valor_nuevo={"nombre": nombre, "cuit": cuit},
+        )
+        session.commit()
+        session.refresh(cliente)
+        return cliente
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def listar_clientes(solo_activos: bool = True):
+    session = SessionLocal()
+    try:
+        q = session.query(Cliente)
+        if solo_activos:
+            q = q.filter(Cliente.activo == True)
+        return q.order_by(Cliente.nombre).all()
+    finally:
+        session.close()
+
+
+def obtener_cliente(cliente_id: int) -> Cliente | None:
+    session = SessionLocal()
+    try:
+        return session.query(Cliente).get(cliente_id)
+    finally:
+        session.close()
+
+
+def registrar_pago_cliente(
+    usuario_id: int, cliente_id: int, monto: float, referencia: str = "Pago"
+):
+    """Registra un pago del cliente y reduce su saldo."""
+    session = SessionLocal()
+    try:
+        cliente = session.query(Cliente).get(cliente_id)
+        if not cliente:
+            raise ValueError("Cliente no encontrado")
+
+        saldo_anterior = cliente.saldo_cuenta_corriente
+        cliente.saldo_cuenta_corriente -= monto
+
+        mov = MovimientoCuenta(
+            cliente_id=cliente_id,
+            tipo="pago",
+            monto=monto,
+            referencia=referencia,
+            usuario_id=usuario_id,
+        )
+        session.add(mov)
+
+        registrar_auditoria(
+            session, usuario_id, "PAGO_CLIENTE", "clientes",
+            registro_id=cliente_id,
+            valor_anterior={"saldo": saldo_anterior},
+            valor_nuevo={"saldo": cliente.saldo_cuenta_corriente, "pago": monto},
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def listar_movimientos_cuenta(cliente_id: int):
+    session = SessionLocal()
+    try:
+        return (
+            session.query(MovimientoCuenta)
+            .filter_by(cliente_id=cliente_id)
+            .order_by(MovimientoCuenta.fecha.desc())
+            .limit(200)
+            .all()
+        )
+    finally:
+        session.close()
+
+
+def productos_proximos_a_vencer(dias: int = 30):
+    """Productos con fecha de vencimiento dentro de los próximos N días."""
+    from datetime import timedelta
+    session = SessionLocal()
+    try:
+        hoy = date.today()
+        limite = hoy + timedelta(days=dias)
+        return (
+            session.query(Producto)
+            .filter(Producto.activo == True)
+            .filter(Producto.fecha_vencimiento != None)
+            .filter(Producto.fecha_vencimiento <= limite)
+            .order_by(Producto.fecha_vencimiento)
             .all()
         )
     finally:

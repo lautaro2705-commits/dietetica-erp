@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from controllers import (
     listar_productos, listar_fracciones, calcular_precio_fraccion,
     procesar_venta, listar_ventas, obtener_detalle_venta,
+    listar_clientes,
 )
 
 
@@ -33,8 +34,33 @@ def _render_nueva_venta():
         st.info("No hay productos cargados. Cargá productos primero.")
         return
 
-    tipo_venta = st.radio("Tipo de venta", ["minorista", "mayorista"], horizontal=True)
+    # Cabecera: tipo de venta, método de pago, cliente
+    col_tipo, col_pago, col_cli = st.columns(3)
+    with col_tipo:
+        tipo_venta = st.radio("Tipo de venta", ["minorista", "mayorista"], horizontal=True)
+    with col_pago:
+        metodo_pago = st.selectbox(
+            "Método de pago",
+            ["efectivo", "transferencia", "cuenta_corriente"],
+            format_func=lambda x: {
+                "efectivo": "💵 Efectivo",
+                "transferencia": "🏦 Transferencia",
+                "cuenta_corriente": "📋 Cuenta Corriente",
+            }[x],
+        )
+    with col_cli:
+        clientes = listar_clientes()
+        cli_options = {"Sin cliente": None}
+        for c in clientes:
+            cli_options[f"{c.nombre}"] = c.id
+        cli_sel = st.selectbox("Cliente", list(cli_options.keys()))
+        cliente_id = cli_options[cli_sel]
 
+    # Validación: cuenta corriente requiere cliente
+    if metodo_pago == "cuenta_corriente" and not cliente_id:
+        st.warning("Para vender en cuenta corriente, seleccioná un cliente.")
+
+    st.divider()
     st.subheader("Agregar al carrito")
     prod_options = {f"{p.codigo} — {p.nombre}": p for p in productos}
     prod_sel = st.selectbox("Producto", list(prod_options.keys()))
@@ -97,12 +123,22 @@ def _render_nueva_venta():
 
         st.markdown(f"### Total: ${total:,.2f}")
 
+        # Mostrar info de pago
+        pago_label = {"efectivo": "💵 Efectivo", "transferencia": "🏦 Transferencia",
+                      "cuenta_corriente": "📋 Cuenta Corriente"}
+        st.caption(
+            f"Pago: {pago_label[metodo_pago]}"
+            + (f" | Cliente: {cli_sel}" if cliente_id else "")
+        )
+
         col_obs, col_btn = st.columns([3, 1])
         with col_obs:
             observaciones = st.text_input("Observaciones", key="obs_venta")
         with col_btn:
             st.write("")  # spacer
-            if st.button("Confirmar Venta", type="primary", use_container_width=True):
+            can_sell = metodo_pago != "cuenta_corriente" or cliente_id is not None
+            if st.button("Confirmar Venta", type="primary",
+                         use_container_width=True, disabled=not can_sell):
                 try:
                     items_para_venta = [
                         {
@@ -117,6 +153,8 @@ def _render_nueva_venta():
                         tipo_venta,
                         items_para_venta,
                         observaciones,
+                        metodo_pago=metodo_pago,
+                        cliente_id=cliente_id,
                     )
                     st.session_state["carrito"] = []
                     st.success(f"Venta #{venta.id} registrada. Total: ${venta.total:,.2f}")
@@ -142,10 +180,16 @@ def _render_historial():
         st.info("No hay ventas en el período seleccionado.")
         return
 
+    pago_icons = {"efectivo": "💵", "transferencia": "🏦",
+                  "cuenta_corriente": "📋"}
+
     for v in ventas:
+        metodo = getattr(v, "metodo_pago", "efectivo") or "efectivo"
+        icon = pago_icons.get(metodo, "")
+        cliente_txt = f" | {v.cliente.nombre}" if v.cliente else ""
         with st.expander(
             f"Venta #{v.id} | {v.fecha.strftime('%d/%m/%Y %H:%M')} | "
-            f"**${v.total:,.2f}** | {v.tipo.upper()}"
+            f"**${v.total:,.2f}** | {v.tipo.upper()} {icon}{cliente_txt}"
         ):
             detalles = obtener_detalle_venta(v.id)
             data = []
@@ -158,5 +202,11 @@ def _render_historial():
                     "Subtotal": f"${d.subtotal:,.2f}",
                 })
             st.dataframe(data, use_container_width=True, hide_index=True)
+            metodo_label = {"efectivo": "Efectivo", "transferencia": "Transferencia",
+                            "cuenta_corriente": "Cuenta Corriente"}
+            st.caption(
+                f"Pago: {metodo_label.get(metodo, metodo)}"
+                + (f" | Cliente: {v.cliente.nombre}" if v.cliente else "")
+            )
             if v.observaciones:
                 st.caption(f"Obs: {v.observaciones}")

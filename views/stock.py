@@ -1,11 +1,13 @@
 """
-views/stock.py - Movimientos de stock y alertas.
+views/stock.py - Movimientos de stock, alertas de stock bajo y vencimiento.
 """
 
 import streamlit as st
+from datetime import date
 from database import SessionLocal, MovimientoStock
 from controllers import (
     listar_productos, registrar_movimiento_stock, productos_bajo_stock,
+    productos_proximos_a_vencer,
 )
 from auth import require_admin
 
@@ -13,8 +15,9 @@ from auth import require_admin
 def render():
     st.header("Stock")
 
-    tab_movimiento, tab_alertas, tab_historial = st.tabs([
-        "Registrar Movimiento", "Alertas Stock Bajo", "Historial"
+    tab_movimiento, tab_alertas, tab_vencimiento, tab_historial = st.tabs([
+        "Registrar Movimiento", "Alertas Stock Bajo",
+        "🗓️ Vencimientos", "Historial",
     ])
 
     with tab_movimiento:
@@ -22,6 +25,9 @@ def render():
 
     with tab_alertas:
         _render_alertas()
+
+    with tab_vencimiento:
+        _render_vencimientos()
 
     with tab_historial:
         _render_historial()
@@ -67,7 +73,7 @@ def _render_movimiento():
 def _render_alertas():
     productos = productos_bajo_stock()
     if not productos:
-        st.success("Todos los productos tienen stock suficiente.")
+        st.success("✅ Todos los productos tienen stock suficiente.")
         return
 
     st.warning(f"{len(productos)} producto(s) con stock bajo o agotado:")
@@ -82,6 +88,59 @@ def _render_alertas():
             "Faltante": max(0, p.stock_minimo - p.stock_actual),
         })
     st.dataframe(data, use_container_width=True, hide_index=True)
+
+
+def _render_vencimientos():
+    dias = st.slider(
+        "Mostrar productos que vencen en los próximos N días",
+        min_value=7, max_value=180, value=60, step=7,
+    )
+
+    productos = productos_proximos_a_vencer(dias)
+
+    if not productos:
+        st.success(f"✅ No hay productos próximos a vencer en los próximos {dias} días.")
+        return
+
+    # Separar vencidos de próximos a vencer
+    hoy = date.today()
+    vencidos = [p for p in productos if p.fecha_vencimiento < hoy]
+    por_vencer = [p for p in productos if p.fecha_vencimiento >= hoy]
+
+    if vencidos:
+        st.error(f"🔴 {len(vencidos)} producto(s) VENCIDO(s):")
+        data_vencidos = []
+        for p in vencidos:
+            dias_pasados = (hoy - p.fecha_vencimiento).days
+            data_vencidos.append({
+                "Código": p.codigo,
+                "Producto": p.nombre,
+                "Vencimiento": p.fecha_vencimiento.strftime("%d/%m/%Y"),
+                "Días vencido": dias_pasados,
+                "Stock": f"{p.stock_actual} {p.unidad_medida}",
+            })
+        st.dataframe(data_vencidos, use_container_width=True, hide_index=True)
+
+    if por_vencer:
+        st.warning(f"🟡 {len(por_vencer)} producto(s) próximo(s) a vencer:")
+        data_por_vencer = []
+        for p in por_vencer:
+            dias_restantes = (p.fecha_vencimiento - hoy).days
+            data_por_vencer.append({
+                "Código": p.codigo,
+                "Producto": p.nombre,
+                "Vencimiento": p.fecha_vencimiento.strftime("%d/%m/%Y"),
+                "Días restantes": dias_restantes,
+                "Stock": f"{p.stock_actual} {p.unidad_medida}",
+                "Proveedor": p.proveedor.nombre if p.proveedor else "—",
+            })
+        st.dataframe(data_por_vencer, use_container_width=True, hide_index=True)
+
+    # Resumen
+    st.divider()
+    col1, col2 = st.columns(2)
+    col1.metric("Productos Vencidos", len(vencidos))
+    col2.metric("Próximos a Vencer", len(por_vencer))
 
 
 def _render_historial():
