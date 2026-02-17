@@ -1,19 +1,23 @@
 """
-views/clientes.py - Gestión de clientes y cuenta corriente.
+views/clientes.py - Gestión de clientes, cuenta corriente y precios especiales.
 """
 
 import streamlit as st
 from controllers import (
     crear_cliente, listar_clientes, obtener_cliente,
     registrar_pago_cliente, listar_movimientos_cuenta,
+    listar_productos, listar_precios_especiales,
+    asignar_precio_especial, eliminar_precio_especial,
+    actualizar_descuento_cliente,
 )
+from auth import require_admin
 
 
 def render():
     st.header("Clientes")
 
-    tab_listado, tab_nuevo, tab_cuenta = st.tabs([
-        "Listado", "Nuevo Cliente", "Cuenta Corriente"
+    tab_listado, tab_nuevo, tab_cuenta, tab_precios = st.tabs([
+        "Listado", "Nuevo Cliente", "Cuenta Corriente", "Precios Especiales"
     ])
 
     with tab_listado:
@@ -24,6 +28,12 @@ def render():
 
     with tab_cuenta:
         _render_cuenta_corriente()
+
+    with tab_precios:
+        if not require_admin():
+            st.warning("Solo administradores pueden gestionar precios especiales.")
+        else:
+            _render_precios_especiales()
 
 
 def _render_listado():
@@ -41,12 +51,14 @@ def _render_listado():
 
     data = []
     for c in clientes:
+        desc_txt = f"{c.descuento_general_pct:g}%" if getattr(c, 'descuento_general_pct', 0) > 0 else "—"
         data.append({
             "ID": c.id,
             "Nombre": c.nombre,
             "CUIT": c.cuit or "—",
             "Teléfono": c.telefono or "—",
             "Email": c.email or "—",
+            "Descuento": desc_txt,
             "Saldo Cta. Cte.": f"${c.saldo_cuenta_corriente:,.2f}",
         })
     st.dataframe(data, use_container_width=True, hide_index=True)
@@ -154,3 +166,118 @@ def _render_cuenta_corriente():
                 "Usuario": m.usuario.nombre if m.usuario else "—",
             })
         st.dataframe(data, use_container_width=True, hide_index=True)
+
+
+def _render_precios_especiales():
+    """Tab para gestionar descuento general y precios fijos por producto/cliente."""
+    clientes = listar_clientes()
+    if not clientes:
+        st.info("No hay clientes cargados.")
+        return
+
+    cli_options = {f"{c.nombre}": c.id for c in clientes}
+    cli_sel = st.selectbox(
+        "Seleccionar cliente", list(cli_options.keys()),
+        key="pe_cliente_sel",
+    )
+    cliente_id = cli_options[cli_sel]
+    cliente = obtener_cliente(cliente_id)
+    if not cliente:
+        return
+
+    # --- Descuento general ---
+    st.subheader("Descuento General (%)")
+    st.caption(
+        "Se aplica como porcentaje de descuento sobre el precio mayorista "
+        "en todas las ventas de este cliente (a menos que exista un precio fijo)."
+    )
+    desc_actual = getattr(cliente, 'descuento_general_pct', 0.0) or 0.0
+
+    with st.form("descuento_form"):
+        nuevo_desc = st.number_input(
+            "Descuento %", min_value=0.0, max_value=100.0,
+            value=float(desc_actual), step=1.0,
+        )
+        if st.form_submit_button("Guardar Descuento", use_container_width=True):
+            try:
+                actualizar_descuento_cliente(
+                    st.session_state["user_id"], cliente_id, nuevo_desc,
+                )
+                st.success(f"Descuento actualizado a {nuevo_desc:g}%.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    # --- Precios fijos por producto ---
+    st.divider()
+    st.subheader("Precios Fijos por Producto")
+    st.caption(
+        "Precio fijo para productos específicos. Tiene prioridad sobre el descuento general."
+    )
+
+    precios = listar_precios_especiales(cliente_id)
+    if precios:
+        data = []
+        for pe in precios:
+            prod_nombre = pe.producto.nombre if pe.producto else "—"
+            prod_codigo = pe.producto.codigo if pe.producto else "—"
+            data.append({
+                "ID": pe.id,
+                "Código": prod_codigo,
+                "Producto": prod_nombre,
+                "Precio Fijo": f"${pe.precio_fijo:,.2f}",
+            })
+        st.dataframe(data, use_container_width=True, hide_index=True)
+
+        # Eliminar precio especial
+        pe_del_options = {
+            f"{pe.producto.codigo} — {pe.producto.nombre} (${pe.precio_fijo:,.2f})": pe.id
+            for pe in precios if pe.producto
+        }
+        if pe_del_options:
+            pe_del_sel = st.selectbox(
+                "Eliminar precio especial",
+                list(pe_del_options.keys()),
+                key="pe_del_sel",
+            )
+            if st.button("Eliminar", key="btn_del_pe"):
+                try:
+                    eliminar_precio_especial(
+                        st.session_state["user_id"],
+                        pe_del_options[pe_del_sel],
+                    )
+                    st.success("Precio especial eliminado.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+    else:
+        st.caption("No hay precios fijos configurados para este cliente.")
+
+    # Agregar nuevo precio especial
+    st.divider()
+    st.markdown("**Agregar precio fijo:**")
+
+    productos = listar_productos()
+    if not productos:
+        st.caption("No hay productos cargados.")
+        return
+
+    with st.form("nuevo_pe"):
+        prod_options = {f"{p.codigo} — {p.nombre} (May: ${p.precio_venta_mayorista:,.2f})": p.id
+                        for p in productos}
+        prod_sel = st.selectbox("Producto", list(prod_options.keys()))
+        precio_fijo = st.number_input(
+            "Precio fijo $", min_value=0.01, step=100.0, value=100.0,
+        )
+        if st.form_submit_button("Asignar Precio", use_container_width=True):
+            try:
+                asignar_precio_especial(
+                    st.session_state["user_id"],
+                    cliente_id,
+                    prod_options[prod_sel],
+                    precio_fijo,
+                )
+                st.success("Precio especial asignado.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")

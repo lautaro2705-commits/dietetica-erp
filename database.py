@@ -124,10 +124,12 @@ class Cliente(Base):
     email = Column(String(150), default="")
     direccion = Column(Text, default="")
     saldo_cuenta_corriente = Column(Float, nullable=False, default=0.0)  # positivo = nos debe
+    descuento_general_pct = Column(Float, nullable=False, default=0.0)  # descuento % sobre mayorista
     activo = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     movimientos_cuenta = relationship("MovimientoCuenta", back_populates="cliente")
+    precios_especiales = relationship("PrecioEspecial", back_populates="cliente")
 
 
 class MovimientoCuenta(Base):
@@ -348,6 +350,20 @@ class RetiroEfectivo(Base):
     usuario = relationship("Usuario")
 
 
+class PrecioEspecial(Base):
+    """Precio fijo por producto para un cliente específico."""
+    __tablename__ = "precios_especiales"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=False)
+    producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
+    precio_fijo = Column(Float, nullable=False)
+    activo = Column(Boolean, default=True)
+
+    cliente = relationship("Cliente", back_populates="precios_especiales")
+    producto = relationship("Producto")
+
+
 # ---------------------------------------------------------------------------
 # Inicialización
 # ---------------------------------------------------------------------------
@@ -380,6 +396,12 @@ def _migrate_columns():
             cols = [c["name"] for c in insp.get_columns("detalle_ventas")]
             if "costo_unitario" not in cols:
                 conn.execute(_text("ALTER TABLE detalle_ventas ADD COLUMN costo_unitario FLOAT"))
+                conn.commit()
+        # Cliente.descuento_general_pct
+        if "clientes" in insp.get_table_names():
+            cols = [c["name"] for c in insp.get_columns("clientes")]
+            if "descuento_general_pct" not in cols:
+                conn.execute(_text("ALTER TABLE clientes ADD COLUMN descuento_general_pct FLOAT DEFAULT 0.0"))
                 conn.commit()
 
 

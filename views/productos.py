@@ -9,6 +9,7 @@ from controllers import (
     listar_productos, crear_fraccion, listar_fracciones,
     calcular_precio_fraccion, listar_categorias, listar_proveedores,
     crear_categoria, crear_proveedor, obtener_producto,
+    importar_productos,
 )
 from auth import require_admin
 
@@ -16,24 +17,30 @@ from auth import require_admin
 def render():
     st.header("Productos")
 
-    tab_listado, tab_nuevo, tab_categorias, tab_proveedores = st.tabs([
-        "Listado", "Nuevo Producto", "Categorías", "Proveedores"
-    ])
+    tabs = ["Listado", "Nuevo Producto", "Categorías", "Proveedores"]
+    if require_admin():
+        tabs.append("Importar")
 
-    with tab_listado:
+    tab_objects = st.tabs(tabs)
+
+    with tab_objects[0]:
         _render_listado()
 
-    with tab_nuevo:
+    with tab_objects[1]:
         if not require_admin():
             st.warning("Solo administradores pueden crear productos.")
         else:
             _render_nuevo_producto()
 
-    with tab_categorias:
+    with tab_objects[2]:
         _render_categorias()
 
-    with tab_proveedores:
+    with tab_objects[3]:
         _render_proveedores()
+
+    if require_admin() and len(tab_objects) > 4:
+        with tab_objects[4]:
+            _render_importar()
 
 
 def _render_listado():
@@ -380,3 +387,94 @@ def _render_proveedores():
                         st.rerun()
                     except Exception as e:
                         st.error(str(e))
+
+
+def _render_importar():
+    """Tab de importación masiva de productos desde CSV/Excel."""
+    import pandas as pd
+
+    st.subheader("Importación Masiva de Productos")
+    st.markdown(
+        "Subí un archivo **CSV** o **Excel (.xlsx)** con los productos a importar. "
+        "Columnas esperadas: `codigo`, `nombre`, `precio_costo`, `precio_venta_mayorista`, "
+        "`categoria`, `proveedor`, `unidad_medida`, `stock_actual`, `margen_minorista_pct`"
+    )
+
+    archivo = st.file_uploader(
+        "Seleccionar archivo", type=["csv", "xlsx"],
+        key="import_file",
+    )
+
+    if archivo is None:
+        # Mostrar plantilla de ejemplo
+        st.caption("📋 Ejemplo de formato esperado:")
+        st.dataframe([{
+            "codigo": "HAR-001", "nombre": "Harina 000 x 25kg",
+            "precio_costo": 15000, "precio_venta_mayorista": 18000,
+            "categoria": "Harinas", "proveedor": "", "unidad_medida": "kg",
+            "stock_actual": 10, "margen_minorista_pct": 30,
+        }], use_container_width=True, hide_index=True)
+        return
+
+    try:
+        if archivo.name.endswith(".csv"):
+            df = pd.read_csv(archivo)
+        else:
+            df = pd.read_excel(archivo)
+    except Exception as e:
+        st.error(f"Error leyendo archivo: {e}")
+        return
+
+    if df.empty:
+        st.warning("El archivo está vacío.")
+        return
+
+    st.success(f"Archivo leído: **{len(df)} filas**, columnas: {', '.join(df.columns)}")
+
+    # Mapeo de columnas
+    st.subheader("Vista previa")
+    st.dataframe(df.head(20), use_container_width=True, hide_index=True)
+
+    # Validaciones básicas
+    cols_requeridas = ["codigo", "nombre"]
+    faltantes = [c for c in cols_requeridas if c not in df.columns]
+    if faltantes:
+        st.error(f"Faltan columnas obligatorias: {', '.join(faltantes)}")
+        return
+
+    # Modo de importación
+    modo = st.radio(
+        "Modo de importación",
+        ["crear", "actualizar"],
+        format_func=lambda x: {
+            "crear": "Crear nuevos (solo agrega productos que no existen)",
+            "actualizar": "Actualizar existentes (actualiza precios por código)",
+        }[x],
+        horizontal=True,
+    )
+
+    st.warning(
+        f"Se procesarán **{len(df)} registros** en modo **{modo}**. "
+        f"Esta operación no se puede deshacer fácilmente."
+    )
+
+    if st.button("Importar Productos", type="primary", use_container_width=True):
+        with st.spinner("Importando..."):
+            datos = df.fillna("").to_dict("records")
+            resultado = importar_productos(
+                st.session_state["user_id"], datos, modo,
+            )
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Creados", resultado["creados"])
+        col2.metric("Actualizados", resultado["actualizados"])
+        col3.metric("Errores", len(resultado["errores"]))
+
+        if resultado["errores"]:
+            with st.expander("Ver errores"):
+                for err in resultado["errores"]:
+                    st.caption(f"⚠️ {err}")
+
+        if resultado["creados"] > 0 or resultado["actualizados"] > 0:
+            st.success("Importación completada.")
+            st.rerun()

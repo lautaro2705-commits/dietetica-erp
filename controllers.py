@@ -11,8 +11,9 @@ from sqlalchemy import func
 from database import (
     SessionLocal, Producto, Fraccion, Venta, DetalleVenta,
     MovimientoStock, Auditoria, Gasto, Categoria, Proveedor,
-    Usuario, hash_password, Compra, DetalleCompra,
+    Usuario, hash_password, verify_password, Compra, DetalleCompra,
     Cliente, MovimientoCuenta, Devolucion, CajaDiaria, RetiroEfectivo,
+    PrecioEspecial, Base, engine,
 )
 
 
@@ -1478,5 +1479,429 @@ def reporte_stock_valorizado() -> dict:
             "por_categoria": por_categoria,
             "total": round(total, 2),
         }
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Importación Masiva de Productos
+# ---------------------------------------------------------------------------
+
+def importar_productos(
+    usuario_id: int, datos: list[dict], modo: str = "crear"
+) -> dict:
+    """Importa productos masivamente desde CSV/Excel parseado.
+
+    modo: 'crear' (solo nuevos) | 'actualizar' (actualiza existentes por código)
+    datos: lista de dicts con claves: codigo, nombre, precio_costo,
+           precio_venta_mayorista, categoria, proveedor, unidad_medida,
+           stock_actual, margen_minorista_pct
+    Retorna: {creados: int, actualizados: int, errores: list[str]}
+    """
+    session = SessionLocal()
+    try:
+        creados = 0
+        actualizados = 0
+        errores = []
+
+        # Cache de categorías y proveedores para no consultar cada vez
+        cats = {c.nombre.lower(): c.id for c in session.query(Categoria).all()}
+        provs = {p.nombre.lower(): p.id for p in session.query(Proveedor).all()}
+
+        for i, row in enumerate(datos, start=1):
+            try:
+                codigo = str(row.get("codigo", "")).strip()
+                nombre = str(row.get("nombre", "")).strip()
+                if not codigo or not nombre:
+                    errores.append(f"Fila {i}: código o nombre vacío")
+                    continue
+
+                existente = session.query(Producto).filter_by(codigo=codigo).first()
+
+                # Resolver categoría
+                cat_name = str(row.get("categoria", "")).strip().lower()
+                cat_id = cats.get(cat_name)
+
+                # Resolver proveedor
+                prov_name = str(row.get("proveedor", "")).strip().lower()
+                prov_id = provs.get(prov_name)
+
+                precio_costo = float(row.get("precio_costo", 0) or 0)
+                precio_mayorista = float(row.get("precio_venta_mayorista", 0) or 0)
+                margen = float(row.get("margen_minorista_pct", 30) or 30)
+                stock = float(row.get("stock_actual", 0) or 0)
+                unidad = str(row.get("unidad_medida", "kg")).strip() or "kg"
+
+                if existente and modo == "actualizar":
+                    anterior = {
+                        "precio_costo": existente.precio_costo,
+                        "precio_venta_mayorista": existente.precio_venta_mayorista,
+                    }
+                    existente.precio_costo = precio_costo
+                    existente.precio_venta_mayorista = precio_mayorista
+                    existente.margen_minorista_pct = margen
+                    if stock > 0:
+                        existente.stock_actual = stock
+                    existente.updated_at = datetime.utcnow()
+                    registrar_auditoria(
+                        session, usuario_id, "IMPORTAR_ACTUALIZAR", "productos",
+                        registro_id=existente.id, valor_anterior=anterior,
+                        valor_nuevo={"precio_costo": precio_costo,
+                                     "precio_venta_mayorista": precio_mayorista},
+                    )
+                    actualizados += 1
+                elif existente and modo == "crear":
+                    errores.append(f"Fila {i}: código '{codigo}' ya existe")
+                else:
+                    prod = Producto(
+                        codigo=codigo, nombre=nombre,
+                        precio_costo=precio_costo,
+                        precio_venta_mayorista=precio_mayorista,
+                        margen_minorista_pct=margen,
+                        stock_actual=stock,
+                        unidad_medida=unidad,
+                        categoria_id=cat_id,
+                        proveedor_id=prov_id,
+                    )
+                    session.add(prod)
+                    session.flush()
+                    registrar_auditoria(
+                        session, usuario_id, "IMPORTAR_CREAR", "productos",
+                        registro_id=prod.id,
+                        valor_nuevo={"codigo": codigo, "nombre": nombre},
+                    )
+                    creados += 1
+            except Exception as e:
+                errores.append(f"Fila {i}: {str(e)}")
+
+        session.commit()
+        return {"creados": creados, "actualizados": actualizados, "errores": errores}
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Backup y Restore
+# ---------------------------------------------------------------------------
+
+def generar_backup_completo() -> dict:
+    """Genera un backup JSON completo de todas las tablas con metadata."""
+    from sqlalchemy import inspect as sa_inspect
+    session = SessionLocal()
+    try:
+        backup = {
+            "_metadata": {
+                "fecha": datetime.utcnow().isoformat(),
+                "version": "3.0",
+                "tablas": {},
+            },
+            "datos": {},
+        }
+        inspector = sa_inspect(engine)
+        table_names = inspector.get_table_names()
+
+        for table_name in table_names:
+            if table_name not in Base.metadata.tables:
+                continue
+            rows = session.execute(
+                Base.metadata.tables[table_name].select()
+            ).fetchall()
+            columns = [col["name"] for col in inspector.get_columns(table_name)]
+            registros = [
+                {col: val for col, val in zip(columns, row)}
+                for row in rows
+            ]
+            backup["datos"][table_name] = registros
+            backup["_metadata"]["tablas"][table_name] = len(registros)
+
+        return backup
+    finally:
+        session.close()
+
+
+def restaurar_backup(
+    usuario_id: int, data: dict
+) -> dict:
+    """Restaura un backup JSON en modo merge (solo agrega registros que no existen).
+
+    Retorna: {tabla: registros_restaurados} por tabla.
+    """
+    from sqlalchemy import inspect as sa_inspect
+    session = SessionLocal()
+    try:
+        resultado = {}
+        datos = data.get("datos", data)  # Soportar formato viejo (sin _metadata)
+        inspector = sa_inspect(engine)
+
+        for table_name, registros in datos.items():
+            if table_name.startswith("_"):
+                continue
+            if table_name not in Base.metadata.tables:
+                continue
+
+            table = Base.metadata.tables[table_name]
+            pk_cols = [col.name for col in table.primary_key.columns]
+            if not pk_cols:
+                continue
+
+            existing_ids = set()
+            for row in session.execute(table.select()).fetchall():
+                pk_val = tuple(getattr(row, pk) for pk in pk_cols)
+                existing_ids.add(pk_val)
+
+            count = 0
+            for reg in registros:
+                pk_val = tuple(reg.get(pk) for pk in pk_cols)
+                if pk_val not in existing_ids:
+                    try:
+                        # Filtrar solo columnas que existen en la tabla actual
+                        valid_cols = [c.name for c in table.columns]
+                        clean_reg = {k: v for k, v in reg.items() if k in valid_cols}
+                        session.execute(table.insert().values(**clean_reg))
+                        count += 1
+                    except Exception:
+                        continue  # Saltar registros con errores de FK, etc.
+
+            resultado[table_name] = count
+
+        registrar_auditoria(
+            session, usuario_id, "RESTAURAR_BACKUP", "sistema",
+            valor_nuevo={"tablas_restauradas": resultado},
+        )
+        session.commit()
+        return resultado
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Seguridad: Cambio de Contraseña
+# ---------------------------------------------------------------------------
+
+def cambiar_password(
+    usuario_id: int, password_actual: str, password_nueva: str
+) -> bool:
+    """Cambia la contraseña del usuario si la actual es correcta."""
+    session = SessionLocal()
+    try:
+        user = session.query(Usuario).get(usuario_id)
+        if not user:
+            raise ValueError("Usuario no encontrado")
+        if not verify_password(password_actual, user.password_hash, user.password_salt):
+            raise ValueError("La contraseña actual es incorrecta")
+        if len(password_nueva) < 4:
+            raise ValueError("La nueva contraseña debe tener al menos 4 caracteres")
+        if password_actual == password_nueva:
+            raise ValueError("La nueva contraseña debe ser diferente a la actual")
+
+        new_hash, new_salt = hash_password(password_nueva)
+        user.password_hash = new_hash
+        user.password_salt = new_salt
+
+        registrar_auditoria(
+            session, usuario_id, "CAMBIAR_PASSWORD", "usuarios",
+            registro_id=usuario_id,
+        )
+        session.commit()
+        return True
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def resetear_password(admin_id: int, target_usuario_id: int) -> str:
+    """Reset de contraseña por admin. Retorna contraseña temporal."""
+    import secrets as _secrets
+    session = SessionLocal()
+    try:
+        admin = session.query(Usuario).get(admin_id)
+        if not admin or admin.rol != "admin":
+            raise ValueError("Solo administradores pueden resetear contraseñas")
+
+        user = session.query(Usuario).get(target_usuario_id)
+        if not user:
+            raise ValueError("Usuario no encontrado")
+
+        temp_password = _secrets.token_urlsafe(6)  # ~8 chars legibles
+        new_hash, new_salt = hash_password(temp_password)
+        user.password_hash = new_hash
+        user.password_salt = new_salt
+
+        registrar_auditoria(
+            session, admin_id, "RESETEAR_PASSWORD", "usuarios",
+            registro_id=target_usuario_id,
+            valor_nuevo={"reseteado_por": admin_id},
+        )
+        session.commit()
+        return temp_password
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Precios Especiales por Cliente
+# ---------------------------------------------------------------------------
+
+def obtener_precio_cliente(
+    cliente_id: int | None, producto_id: int, tipo_venta: str
+) -> tuple[float, str]:
+    """Resuelve el precio para un cliente/producto.
+
+    Prioridad:
+    1. PrecioEspecial(cliente, producto) → precio fijo
+    2. Cliente.descuento_general_pct > 0 → descuento sobre mayorista
+    3. Precio normal según tipo de venta
+
+    Retorna (precio, etiqueta) donde etiqueta indica el tipo de precio aplicado.
+    """
+    session = SessionLocal()
+    try:
+        prod = session.query(Producto).get(producto_id)
+        if not prod:
+            raise ValueError("Producto no encontrado")
+
+        # Precio normal según tipo
+        if tipo_venta == "mayorista":
+            precio_normal = prod.precio_venta_mayorista
+        else:
+            precio_normal = prod.precio_costo * (1 + prod.margen_minorista_pct / 100)
+
+        if not cliente_id:
+            return round(precio_normal, 2), ""
+
+        # 1. Precio especial fijo
+        pe = (
+            session.query(PrecioEspecial)
+            .filter_by(cliente_id=cliente_id, producto_id=producto_id, activo=True)
+            .first()
+        )
+        if pe:
+            return round(pe.precio_fijo, 2), "🏷️ Precio especial"
+
+        # 2. Descuento general del cliente
+        cliente = session.query(Cliente).get(cliente_id)
+        if cliente and cliente.descuento_general_pct > 0:
+            precio_desc = prod.precio_venta_mayorista * (1 - cliente.descuento_general_pct / 100)
+            return round(precio_desc, 2), f"🏷️ -{cliente.descuento_general_pct:g}%"
+
+        # 3. Normal
+        return round(precio_normal, 2), ""
+    finally:
+        session.close()
+
+
+def asignar_precio_especial(
+    usuario_id: int, cliente_id: int, producto_id: int, precio: float
+) -> PrecioEspecial:
+    """Asigna o actualiza un precio especial fijo para un cliente/producto."""
+    session = SessionLocal()
+    try:
+        existente = (
+            session.query(PrecioEspecial)
+            .filter_by(cliente_id=cliente_id, producto_id=producto_id)
+            .first()
+        )
+        if existente:
+            anterior = {"precio_fijo": existente.precio_fijo, "activo": existente.activo}
+            existente.precio_fijo = precio
+            existente.activo = True
+            registrar_auditoria(
+                session, usuario_id, "MODIFICAR", "precios_especiales",
+                registro_id=existente.id, valor_anterior=anterior,
+                valor_nuevo={"precio_fijo": precio},
+            )
+            session.commit()
+            session.refresh(existente)
+            return existente
+        else:
+            pe = PrecioEspecial(
+                cliente_id=cliente_id,
+                producto_id=producto_id,
+                precio_fijo=precio,
+            )
+            session.add(pe)
+            session.flush()
+            registrar_auditoria(
+                session, usuario_id, "CREAR", "precios_especiales",
+                registro_id=pe.id,
+                valor_nuevo={"cliente_id": cliente_id, "producto_id": producto_id,
+                             "precio_fijo": precio},
+            )
+            session.commit()
+            session.refresh(pe)
+            return pe
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def listar_precios_especiales(cliente_id: int) -> list:
+    """Lista todos los precios especiales activos de un cliente."""
+    session = SessionLocal()
+    try:
+        return (
+            session.query(PrecioEspecial)
+            .filter_by(cliente_id=cliente_id, activo=True)
+            .all()
+        )
+    finally:
+        session.close()
+
+
+def eliminar_precio_especial(usuario_id: int, precio_especial_id: int):
+    """Desactiva un precio especial."""
+    session = SessionLocal()
+    try:
+        pe = session.query(PrecioEspecial).get(precio_especial_id)
+        if not pe:
+            raise ValueError("Precio especial no encontrado")
+        pe.activo = False
+        registrar_auditoria(
+            session, usuario_id, "DESACTIVAR", "precios_especiales",
+            registro_id=pe.id,
+            valor_anterior={"activo": True},
+            valor_nuevo={"activo": False},
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def actualizar_descuento_cliente(
+    usuario_id: int, cliente_id: int, descuento_pct: float
+):
+    """Actualiza el descuento general de un cliente."""
+    session = SessionLocal()
+    try:
+        cliente = session.query(Cliente).get(cliente_id)
+        if not cliente:
+            raise ValueError("Cliente no encontrado")
+        anterior = {"descuento_general_pct": cliente.descuento_general_pct}
+        cliente.descuento_general_pct = descuento_pct
+        registrar_auditoria(
+            session, usuario_id, "MODIFICAR", "clientes",
+            registro_id=cliente_id, valor_anterior=anterior,
+            valor_nuevo={"descuento_general_pct": descuento_pct},
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
