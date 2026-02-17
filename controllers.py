@@ -130,7 +130,12 @@ def listar_productos(solo_activos: bool = True):
 def obtener_producto(producto_id: int) -> Producto | None:
     session = SessionLocal()
     try:
-        return session.query(Producto).get(producto_id)
+        return (
+            session.query(Producto)
+            .options(joinedload(Producto.categoria))
+            .options(joinedload(Producto.proveedor))
+            .get(producto_id)
+        )
     finally:
         session.close()
 
@@ -173,6 +178,7 @@ def listar_fracciones(producto_padre_id: int):
     try:
         return (
             session.query(Fraccion)
+            .options(joinedload(Fraccion.producto_padre))
             .filter_by(producto_padre_id=producto_padre_id, activo=True)
             .order_by(Fraccion.cantidad)
             .all()
@@ -393,7 +399,12 @@ def procesar_venta(
 def listar_ventas(fecha_desde: date | None = None, fecha_hasta: date | None = None):
     session = SessionLocal()
     try:
-        q = session.query(Venta).order_by(Venta.fecha.desc())
+        q = (
+            session.query(Venta)
+            .options(joinedload(Venta.usuario))
+            .options(joinedload(Venta.cliente))
+            .order_by(Venta.fecha.desc())
+        )
         if fecha_desde:
             q = q.filter(Venta.fecha >= datetime.combine(fecha_desde, datetime.min.time()))
         if fecha_hasta:
@@ -408,6 +419,8 @@ def obtener_detalle_venta(venta_id: int):
     try:
         return (
             session.query(DetalleVenta)
+            .options(joinedload(DetalleVenta.producto))
+            .options(joinedload(DetalleVenta.fraccion))
             .filter_by(venta_id=venta_id)
             .all()
         )
@@ -510,7 +523,12 @@ def registrar_gasto(usuario_id: int, descripcion: str, monto: float,
 def listar_gastos(fecha_desde: date | None = None, fecha_hasta: date | None = None):
     session = SessionLocal()
     try:
-        q = session.query(Gasto).filter(Gasto.activo == True).order_by(Gasto.fecha.desc())
+        q = (
+            session.query(Gasto)
+            .options(joinedload(Gasto.usuario))
+            .filter(Gasto.activo == True)
+            .order_by(Gasto.fecha.desc())
+        )
         if fecha_desde:
             q = q.filter(Gasto.fecha >= datetime.combine(fecha_desde, datetime.min.time()))
         if fecha_hasta:
@@ -589,6 +607,7 @@ def listar_auditoria(limit: int = 100):
     try:
         return (
             session.query(Auditoria)
+            .options(joinedload(Auditoria.usuario))
             .order_by(Auditoria.fecha.desc())
             .limit(limit)
             .all()
@@ -770,7 +789,12 @@ def procesar_compra(
 def listar_compras(fecha_desde: date | None = None, fecha_hasta: date | None = None):
     session = SessionLocal()
     try:
-        q = session.query(Compra).order_by(Compra.fecha.desc())
+        q = (
+            session.query(Compra)
+            .options(joinedload(Compra.usuario))
+            .options(joinedload(Compra.proveedor))
+            .order_by(Compra.fecha.desc())
+        )
         if fecha_desde:
             q = q.filter(Compra.fecha >= datetime.combine(fecha_desde, datetime.min.time()))
         if fecha_hasta:
@@ -785,6 +809,7 @@ def obtener_detalle_compra(compra_id: int):
     try:
         return (
             session.query(DetalleCompra)
+            .options(joinedload(DetalleCompra.producto))
             .filter_by(compra_id=compra_id)
             .all()
         )
@@ -882,6 +907,7 @@ def listar_movimientos_cuenta(cliente_id: int):
     try:
         return (
             session.query(MovimientoCuenta)
+            .options(joinedload(MovimientoCuenta.usuario))
             .filter_by(cliente_id=cliente_id)
             .order_by(MovimientoCuenta.fecha.desc())
             .limit(200)
@@ -1159,7 +1185,12 @@ def devolucion_parcial(
 def obtener_venta(venta_id: int) -> Venta | None:
     session = SessionLocal()
     try:
-        return session.query(Venta).get(venta_id)
+        return (
+            session.query(Venta)
+            .options(joinedload(Venta.usuario))
+            .options(joinedload(Venta.cliente))
+            .get(venta_id)
+        )
     finally:
         session.close()
 
@@ -1172,7 +1203,13 @@ def obtener_caja_hoy() -> CajaDiaria | None:
     """Obtiene la caja del día de hoy (si existe)."""
     session = SessionLocal()
     try:
-        return session.query(CajaDiaria).filter_by(fecha=date.today()).first()
+        return (
+            session.query(CajaDiaria)
+            .options(joinedload(CajaDiaria.usuario_apertura))
+            .options(joinedload(CajaDiaria.usuario_cierre))
+            .filter_by(fecha=date.today())
+            .first()
+        )
     finally:
         session.close()
 
@@ -1286,6 +1323,7 @@ def listar_retiros(caja_id: int):
     try:
         return (
             session.query(RetiroEfectivo)
+            .options(joinedload(RetiroEfectivo.usuario))
             .filter_by(caja_id=caja_id)
             .order_by(RetiroEfectivo.fecha.desc())
             .all()
@@ -1468,6 +1506,7 @@ def reporte_stock_valorizado() -> dict:
     try:
         productos = (
             session.query(Producto)
+            .options(joinedload(Producto.categoria))
             .filter(Producto.activo == True)
             .all()
         )
@@ -1863,6 +1902,7 @@ def listar_precios_especiales(cliente_id: int) -> list:
     try:
         return (
             session.query(PrecioEspecial)
+            .options(joinedload(PrecioEspecial.producto))
             .filter_by(cliente_id=cliente_id, activo=True)
             .all()
         )
