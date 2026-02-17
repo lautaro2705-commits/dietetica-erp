@@ -6,6 +6,7 @@ import json
 import streamlit as st
 from controllers import listar_auditoria
 from auth import require_admin
+from utils.cache import cached_query, TTL_CORTO
 
 
 def render():
@@ -18,7 +19,7 @@ def render():
     st.caption("Registro inmutable de todas las operaciones del sistema.")
 
     limit = st.selectbox("Mostrar últimos", [50, 100, 200, 500], index=1)
-    logs = listar_auditoria(limit=limit)
+    logs = cached_query(f"auditoria_{limit}", listar_auditoria, TTL_CORTO, limit)
 
     if not logs:
         st.info("No hay registros de auditoría.")

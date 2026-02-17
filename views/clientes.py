@@ -11,6 +11,10 @@ from controllers import (
     actualizar_descuento_cliente,
 )
 from auth import require_admin
+from utils.cache import (
+    cached_query, invalidar_cache_clientes, invalidar_cache_productos,
+    TTL_MEDIO, TTL_LARGO,
+)
 
 
 def render():
@@ -37,7 +41,7 @@ def render():
 
 
 def _render_listado():
-    clientes = listar_clientes()
+    clientes = cached_query("clientes_activos", listar_clientes, TTL_MEDIO)
     if not clientes:
         st.info("No hay clientes cargados.")
         return
@@ -94,6 +98,7 @@ def _render_nuevo_cliente():
                         nombre=nombre, cuit=cuit, telefono=telefono,
                         email=email, direccion=direccion,
                     )
+                    invalidar_cache_clientes()
                     st.success(f"Cliente '{nombre}' creado.")
                     st.rerun()
                 except Exception as e:
@@ -101,7 +106,7 @@ def _render_nuevo_cliente():
 
 
 def _render_cuenta_corriente():
-    clientes = listar_clientes()
+    clientes = cached_query("clientes_activos", listar_clientes, TTL_MEDIO)
     if not clientes:
         st.info("No hay clientes cargados.")
         return
@@ -143,6 +148,7 @@ def _render_cuenta_corriente():
                     st.session_state["user_id"],
                     cliente_id, monto, referencia,
                 )
+                invalidar_cache_clientes()
                 st.success(f"Pago de ${monto:,.2f} registrado.")
                 st.rerun()
             except Exception as e:
@@ -170,7 +176,7 @@ def _render_cuenta_corriente():
 
 def _render_precios_especiales():
     """Tab para gestionar descuento general y precios fijos por producto/cliente."""
-    clientes = listar_clientes()
+    clientes = cached_query("clientes_activos", listar_clientes, TTL_MEDIO)
     if not clientes:
         st.info("No hay clientes cargados.")
         return
@@ -203,6 +209,7 @@ def _render_precios_especiales():
                 actualizar_descuento_cliente(
                     st.session_state["user_id"], cliente_id, nuevo_desc,
                 )
+                invalidar_cache_clientes()
                 st.success(f"Descuento actualizado a {nuevo_desc:g}%.")
                 st.rerun()
             except Exception as e:
@@ -246,6 +253,7 @@ def _render_precios_especiales():
                         st.session_state["user_id"],
                         pe_del_options[pe_del_sel],
                     )
+                    invalidar_cache_clientes()
                     st.success("Precio especial eliminado.")
                     st.rerun()
                 except Exception as e:
@@ -257,7 +265,7 @@ def _render_precios_especiales():
     st.divider()
     st.markdown("**Agregar precio fijo:**")
 
-    productos = listar_productos()
+    productos = cached_query("productos_activos", listar_productos, TTL_MEDIO)
     if not productos:
         st.caption("No hay productos cargados.")
         return
@@ -277,6 +285,7 @@ def _render_precios_especiales():
                     prod_options[prod_sel],
                     precio_fijo,
                 )
+                invalidar_cache_clientes()
                 st.success("Precio especial asignado.")
                 st.rerun()
             except Exception as e:

@@ -10,6 +10,7 @@ from controllers import (
     productos_proximos_a_vencer,
 )
 from auth import require_admin
+from utils.cache import cached_query, invalidar_cache_productos, TTL_CORTO, TTL_MEDIO
 
 
 def render():
@@ -38,7 +39,7 @@ def _render_movimiento():
         st.warning("Solo administradores pueden registrar movimientos de stock.")
         return
 
-    productos = listar_productos()
+    productos = cached_query("productos_activos", listar_productos, TTL_MEDIO)
     if not productos:
         st.info("No hay productos cargados.")
         return
@@ -64,6 +65,7 @@ def _render_movimiento():
                     cantidad,
                     referencia,
                 )
+                invalidar_cache_productos()
                 st.success("Movimiento registrado correctamente.")
                 st.rerun()
             except Exception as e:
@@ -71,7 +73,7 @@ def _render_movimiento():
 
 
 def _render_alertas():
-    productos = productos_bajo_stock()
+    productos = cached_query("stock_bajo", productos_bajo_stock, TTL_CORTO)
     if not productos:
         st.success("✅ Todos los productos tienen stock suficiente.")
         return
@@ -96,7 +98,7 @@ def _render_vencimientos():
         min_value=7, max_value=180, value=60, step=7,
     )
 
-    productos = productos_proximos_a_vencer(dias)
+    productos = cached_query(f"stock_vencimiento_{dias}", productos_proximos_a_vencer, TTL_MEDIO, dias)
 
     if not productos:
         st.success(f"✅ No hay productos próximos a vencer en los próximos {dias} días.")

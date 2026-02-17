@@ -14,12 +14,16 @@ from controllers import (
     registrar_retiro,
     listar_retiros,
 )
+from utils.cache import (
+    cached_query, invalidar_cache_caja, invalidar_cache_ventas,
+    TTL_CORTO, TTL_MEDIO,
+)
 
 
 def render():
     st.header("Caja Diaria")
 
-    caja = obtener_caja_hoy()
+    caja = cached_query("caja_hoy", obtener_caja_hoy, TTL_CORTO)
 
     # Indicador de estado
     if caja and caja.estado == "abierta":
@@ -79,6 +83,7 @@ def _render_apertura_cierre(caja):
                     monto,
                     obs,
                 )
+                invalidar_cache_caja()
                 st.success("Caja abierta correctamente.")
                 st.rerun()
             except Exception as e:
@@ -88,9 +93,9 @@ def _render_apertura_cierre(caja):
         # Caja abierta → formulario de cierre
         st.subheader("Cerrar Caja")
 
-        # Calcular esperado
-        resumen = resumen_caja(date.today())
-        retiros_lista = listar_retiros(caja.id)
+        # Calcular esperado (cacheado 15s)
+        resumen = cached_query("caja_resumen_hoy", resumen_caja, TTL_CORTO, date.today())
+        retiros_lista = cached_query(f"retiros_{caja.id}", listar_retiros, TTL_CORTO, caja.id)
         total_retiros = sum(r.monto for r in retiros_lista)
 
         efectivo_ventas = resumen.get("desglose_pago", {}).get("efectivo", 0)
@@ -123,6 +128,7 @@ def _render_apertura_cierre(caja):
                     monto_cierre,
                     obs,
                 )
+                invalidar_cache_caja()
                 st.success("Caja cerrada correctamente.")
 
                 # Mostrar diferencia
@@ -178,6 +184,7 @@ def _render_retiros(caja):
                     monto,
                     motivo,
                 )
+                invalidar_cache_caja()
                 st.success(f"Retiro de ${monto:,.2f} registrado.")
                 st.rerun()
             except Exception as e:
@@ -187,7 +194,7 @@ def _render_retiros(caja):
     st.divider()
     st.subheader("Retiros del Día")
 
-    retiros = listar_retiros(caja.id)
+    retiros = cached_query(f"retiros_{caja.id}", listar_retiros, TTL_CORTO, caja.id)
     if not retiros:
         st.caption("No hay retiros registrados hoy.")
     else:
@@ -206,7 +213,7 @@ def _render_retiros(caja):
 # ---------------------------------------------------------------------------
 
 def _render_resumen_dia(caja):
-    resumen = resumen_caja(date.today())
+    resumen = cached_query("caja_resumen_hoy", resumen_caja, TTL_CORTO, date.today())
 
     # Métricas principales
     col1, col2, col3, col4 = st.columns(4)
@@ -241,7 +248,7 @@ def _render_resumen_dia(caja):
         st.divider()
         st.subheader("Cuadre de Caja")
 
-        retiros_lista = listar_retiros(caja.id) if caja else []
+        retiros_lista = cached_query(f"retiros_{caja.id}", listar_retiros, TTL_CORTO, caja.id) if caja else []
         total_retiros = sum(r.monto for r in retiros_lista)
 
         esperado = caja.monto_apertura + efectivo - total_retiros - resumen["total_gastos"]
@@ -288,7 +295,7 @@ def _render_resumen_semanal():
     datos_semana = []
     for i in range(6, -1, -1):
         dia = date.today() - timedelta(days=i)
-        r = resumen_caja(dia)
+        r = cached_query(f"caja_resumen_{dia}", resumen_caja, TTL_MEDIO, dia)
         desg = r.get("desglose_pago", {})
         datos_semana.append({
             "Fecha": dia.strftime("%d/%m"),

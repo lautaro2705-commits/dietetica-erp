@@ -9,6 +9,10 @@ from controllers import (
     listar_productos, listar_proveedores,
     procesar_compra, listar_compras, obtener_detalle_compra,
 )
+from utils.cache import (
+    cached_query, invalidar_cache_productos, invalidar_cache_ventas,
+    TTL_CORTO, TTL_MEDIO, TTL_LARGO,
+)
 
 
 def render():
@@ -28,12 +32,12 @@ def _render_nueva_compra():
     if "carrito_compra" not in st.session_state:
         st.session_state["carrito_compra"] = []
 
-    productos = listar_productos()
+    productos = cached_query("productos_activos", listar_productos, TTL_MEDIO)
     if not productos:
         st.info("No hay productos cargados. Cargá productos primero.")
         return
 
-    proveedores = listar_proveedores()
+    proveedores = cached_query("proveedores_activos", listar_proveedores, TTL_LARGO)
 
     # Datos de cabecera
     col_prov, col_fact = st.columns(2)
@@ -138,6 +142,7 @@ def _render_nueva_compra():
                         numero_factura,
                         observaciones,
                     )
+                    invalidar_cache_productos()
                     st.session_state["carrito_compra"] = []
                     st.success(
                         f"Compra #{compra.id} registrada. "
@@ -162,7 +167,10 @@ def _render_historial():
     with col2:
         fecha_hasta = st.date_input("Hasta", value=date.today(), key="compra_hasta")
 
-    compras = listar_compras(fecha_desde, fecha_hasta)
+    compras = cached_query(
+        f"compras_{fecha_desde}_{fecha_hasta}",
+        listar_compras, TTL_CORTO, fecha_desde, fecha_hasta,
+    )
 
     if not compras:
         st.info("No hay compras en el período seleccionado.")
