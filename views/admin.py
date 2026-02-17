@@ -1,15 +1,17 @@
 """
-views/admin.py - Panel de administración: usuarios y backup.
+views/admin.py - Panel de administración: usuarios, backup/restore y reset de contraseñas.
 """
 from __future__ import annotations
 
-import io
-import csv
 import json
+from datetime import datetime
 import streamlit as st
-from controllers import crear_usuario, listar_usuarios, desactivar_usuario
+from controllers import (
+    crear_usuario, listar_usuarios, desactivar_usuario,
+    generar_backup_completo, restaurar_backup,
+    resetear_password,
+)
 from auth import require_admin
-from database import SessionLocal, engine, Base
 
 
 def render():
@@ -19,7 +21,7 @@ def render():
         st.warning("Acceso restringido a administradores.")
         return
 
-    tab_usuarios, tab_backup = st.tabs(["Usuarios", "Backup"])
+    tab_usuarios, tab_backup = st.tabs(["Usuarios", "Backup y Restauración"])
 
     with tab_usuarios:
         _render_usuarios()
@@ -56,6 +58,29 @@ def _render_usuarios():
                 except Exception as e:
                     st.error(str(e))
 
+        # Resetear contraseña
+        st.divider()
+        st.subheader("Resetear Contraseña")
+        reset_options = {f"{u.username} — {u.nombre}": u.id for u in usuarios if u.username != "admin"}
+        if reset_options:
+            reset_sel = st.selectbox(
+                "Seleccionar usuario para resetear",
+                list(reset_options.keys()),
+                key="reset_user_sel",
+            )
+            if st.button("🔑 Resetear Contraseña", type="secondary"):
+                try:
+                    temp_pw = resetear_password(
+                        st.session_state["user_id"],
+                        reset_options[reset_sel],
+                    )
+                    st.success(
+                        f"Contraseña reseteada. **Contraseña temporal:** `{temp_pw}`\n\n"
+                        f"⚠️ Anotala, se muestra solo esta vez."
+                    )
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
     st.divider()
     st.subheader("Crear Nuevo Usuario")
 
@@ -84,48 +109,105 @@ def _render_usuarios():
 
 
 def _render_backup():
-    st.subheader("Exportar Backup de Base de Datos")
-    st.markdown(
-        "Descargá una copia completa de todos los datos del sistema en formato **JSON**. "
-        "Incluye todas las tablas con todos los registros."
-    )
+    col_export, col_import = st.columns(2)
 
-    if st.button("Generar Backup", type="primary", use_container_width=True):
-        try:
-            backup_data = _generate_json_backup()
-            json_str = json.dumps(backup_data, ensure_ascii=False, indent=2, default=str)
-            st.download_button(
-                label="Descargar Backup (.json)",
-                data=json_str,
-                file_name="dietetica_backup.json",
-                mime="application/json",
-                use_container_width=True,
+    with col_export:
+        st.subheader("📤 Exportar Backup")
+        st.markdown(
+            "Descargá una copia completa de todos los datos del sistema "
+            "en formato **JSON** con metadata."
+        )
+
+        if st.button("Generar Backup", type="primary", use_container_width=True):
+            try:
+                backup_data = generar_backup_completo()
+                json_str = json.dumps(
+                    backup_data, ensure_ascii=False, indent=2, default=str
+                )
+                fecha_str = datetime.now().strftime("%Y-%m-%d")
+                filename = f"backup_aqui_y_ahora_{fecha_str}.json"
+
+                # Resumen
+                meta = backup_data.get("_metadata", {})
+                tablas_info = meta.get("tablas", {})
+                total_regs = sum(tablas_info.values())
+                st.success(
+                    f"Backup generado: **{total_regs} registros** "
+                    f"en **{len(tablas_info)} tablas**."
+                )
+
+                st.download_button(
+                    label=f"⬇️ Descargar {filename}",
+                    data=json_str,
+                    file_name=filename,
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Error generando backup: {e}")
+
+    with col_import:
+        st.subheader("📥 Restaurar Backup")
+        st.markdown(
+            "Subí un archivo JSON de backup para restaurar datos. "
+            "**Modo merge:** solo agrega registros que no existen."
+        )
+
+        archivo = st.file_uploader(
+            "Seleccionar archivo de backup",
+            type=["json"],
+            key="restore_file",
+        )
+
+        if archivo:
+            try:
+                contenido = json.loads(archivo.read().decode("utf-8"))
+            except Exception as e:
+                st.error(f"Error leyendo archivo: {e}")
+                return
+
+            # Preview
+            meta = contenido.get("_metadata", {})
+            datos = contenido.get("datos", contenido)
+
+            if meta:
+                st.caption(
+                    f"Backup del: {meta.get('fecha', '?')} | "
+                    f"Versión: {meta.get('version', '?')}"
+                )
+
+            st.markdown("**Registros por tabla:**")
+            preview_data = []
+            for table, regs in datos.items():
+                if table.startswith("_"):
+                    continue
+                if isinstance(regs, list):
+                    preview_data.append({
+                        "Tabla": table,
+                        "Registros": len(regs),
+                    })
+            if preview_data:
+                st.dataframe(preview_data, use_container_width=True, hide_index=True)
+
+            st.warning(
+                "⚠️ La restauración **solo agrega** registros que no existen "
+                "(por ID). No sobrescribe datos existentes."
             )
-            st.success(
-                f"Backup generado: {sum(len(v) for v in backup_data.values())} "
-                f"registros en {len(backup_data)} tablas."
-            )
-        except Exception as e:
-            st.error(f"Error generando backup: {e}")
 
-
-def _generate_json_backup() -> dict:
-    """Exporta todas las tablas como diccionario JSON."""
-    from sqlalchemy import inspect
-
-    session = SessionLocal()
-    try:
-        backup = {}
-        inspector = inspect(engine)
-        table_names = inspector.get_table_names()
-
-        for table_name in table_names:
-            rows = session.execute(Base.metadata.tables[table_name].select()).fetchall()
-            columns = [col["name"] for col in inspector.get_columns(table_name)]
-            backup[table_name] = [
-                {col: val for col, val in zip(columns, row)}
-                for row in rows
-            ]
-        return backup
-    finally:
-        session.close()
+            if st.button("Restaurar Backup", type="primary", use_container_width=True):
+                with st.spinner("Restaurando..."):
+                    try:
+                        resultado = restaurar_backup(
+                            st.session_state["user_id"], contenido
+                        )
+                        total = sum(resultado.values())
+                        if total > 0:
+                            st.success(f"Restauración completada: {total} registros importados.")
+                            with st.expander("Detalle por tabla"):
+                                for tabla, count in resultado.items():
+                                    if count > 0:
+                                        st.caption(f"✅ {tabla}: {count} registros")
+                        else:
+                            st.info("No se encontraron registros nuevos para importar.")
+                    except Exception as e:
+                        st.error(f"Error restaurando: {e}")

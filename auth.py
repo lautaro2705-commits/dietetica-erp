@@ -1,5 +1,5 @@
 """
-auth.py - Autenticación y gestión de sesión Streamlit.
+auth.py - Autenticación, gestión de sesión y cambio de contraseña Streamlit.
 """
 from __future__ import annotations
 
@@ -75,3 +75,32 @@ def logout():
     for key in ["user_id", "username", "nombre", "rol", "logged_in"]:
         st.session_state.pop(key, None)
     st.rerun()
+
+
+def render_cambiar_password():
+    """Renderiza el diálogo de cambio de contraseña en el sidebar."""
+    from controllers import cambiar_password
+
+    with st.popover("🔑 Cambiar contraseña"):
+        with st.form("cambiar_pw_form"):
+            pw_actual = st.text_input("Contraseña actual", type="password", key="pw_actual")
+            pw_nueva = st.text_input("Nueva contraseña", type="password", key="pw_nueva")
+            pw_confirmar = st.text_input("Confirmar nueva", type="password", key="pw_confirmar")
+
+            if st.form_submit_button("Cambiar", use_container_width=True):
+                if not pw_actual or not pw_nueva or not pw_confirmar:
+                    st.error("Completá todos los campos.")
+                elif pw_nueva != pw_confirmar:
+                    st.error("La nueva contraseña y la confirmación no coinciden.")
+                elif len(pw_nueva) < 4:
+                    st.error("La nueva contraseña debe tener al menos 4 caracteres.")
+                else:
+                    try:
+                        cambiar_password(
+                            st.session_state["user_id"],
+                            pw_actual,
+                            pw_nueva,
+                        )
+                        st.success("Contraseña cambiada exitosamente.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")

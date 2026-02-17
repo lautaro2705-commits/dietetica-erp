@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 from database import init_db
-from auth import require_login, require_admin, logout
+from auth import require_login, require_admin, logout, render_cambiar_password
 from views import productos, ventas, compras, stock, precios, gastos, caja, auditoria, admin, clientes, reportes
 
 # Inicializar base de datos
@@ -48,6 +48,7 @@ with st.sidebar:
     seleccion = st.radio("Navegación", list(paginas.keys()), label_visibility="collapsed")
 
     st.divider()
+    render_cambiar_password()
     if st.button("Cerrar Sesión", use_container_width=True):
         logout()
 

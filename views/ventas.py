@@ -1,8 +1,9 @@
 """
-views/ventas.py - Registro de ventas, historial, tickets PDF y devoluciones.
+views/ventas.py - Registro de ventas, historial, tickets PDF, devoluciones y scanner de códigos.
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, timedelta
 
 from controllers import (
@@ -10,8 +11,10 @@ from controllers import (
     procesar_venta, listar_ventas, obtener_detalle_venta,
     listar_clientes, caja_abierta_hoy,
     anular_venta, devolucion_parcial,
+    obtener_precio_cliente,
 )
 from utils.ticket_pdf import generar_ticket_pdf, generar_link_whatsapp
+from utils.barcode_scanner import get_barcode_scanner_html, get_scanner_height
 
 
 def render():
@@ -75,6 +78,42 @@ def _render_nueva_venta():
         st.warning("Para vender en cuenta corriente, seleccioná un cliente.")
 
     st.divider()
+
+    # --- Búsqueda rápida por código y Scanner ---
+    col_busqueda, col_scanner = st.columns([3, 1])
+    with col_busqueda:
+        codigo_busqueda = st.text_input(
+            "Búsqueda rápida por código",
+            placeholder="Escribí o escaneá un código de barras...",
+            key="codigo_rapido",
+        )
+    with col_scanner:
+        st.write("")  # spacer
+        mostrar_scanner = st.toggle("📷 Scanner", key="toggle_scanner")
+
+    # Scanner de cámara
+    if mostrar_scanner:
+        st.caption("Apuntá la cámara al código de barras:")
+        components.html(
+            get_barcode_scanner_html("ventas_scanner"),
+            height=get_scanner_height(),
+        )
+        st.caption("El código escaneado aparecerá en el campo de búsqueda.")
+
+    # Si hay código en búsqueda rápida, buscar y agregar
+    if codigo_busqueda:
+        matches = [p for p in productos if p.codigo.lower() == codigo_busqueda.strip().lower()]
+        if matches:
+            prod_match = matches[0]
+            precio, etiqueta = obtener_precio_cliente(cliente_id, prod_match.id, tipo_venta)
+            etiqueta_txt = f" {etiqueta}" if etiqueta else ""
+            st.success(
+                f"Encontrado: **{prod_match.nombre}** — "
+                f"${precio:,.2f}{etiqueta_txt}"
+            )
+        else:
+            st.warning(f"Producto con código '{codigo_busqueda}' no encontrado.")
+
     st.subheader("Agregar al carrito")
     prod_options = {f"{p.codigo} — {p.nombre}": p for p in productos}
     prod_sel = st.selectbox("Producto", list(prod_options.keys()))
@@ -92,17 +131,23 @@ def _render_nueva_venta():
 
         cantidad = st.number_input("Cantidad", min_value=1, value=1, step=1)
 
+        # Resolver precio con lógica de precios especiales
         if frac:
             precio_unit = calcular_precio_fraccion(prod, frac)
-        elif tipo_venta == "mayorista":
-            precio_unit = prod.precio_venta_mayorista
+            etiqueta = ""
         else:
-            precio_unit = prod.precio_costo * (1 + prod.margen_minorista_pct / 100)
+            precio_unit, etiqueta = obtener_precio_cliente(
+                cliente_id, prod.id, tipo_venta,
+            )
 
         precio_unit = round(precio_unit, 2)
         subtotal = round(precio_unit * cantidad, 2)
 
-        st.info(f"Precio unitario: **${precio_unit:,.2f}** | Subtotal: **${subtotal:,.2f}**")
+        etiqueta_txt = f" {etiqueta}" if etiqueta else ""
+        st.info(
+            f"Precio unitario: **${precio_unit:,.2f}**{etiqueta_txt} | "
+            f"Subtotal: **${subtotal:,.2f}**"
+        )
 
         if st.button("Agregar al carrito", type="primary"):
             st.session_state["carrito"].append({
@@ -113,6 +158,7 @@ def _render_nueva_venta():
                 "cantidad": cantidad,
                 "precio_unitario": precio_unit,
                 "subtotal": subtotal,
+                "etiqueta_precio": etiqueta,
             })
             st.success("Agregado al carrito.")
             st.rerun()
@@ -128,7 +174,11 @@ def _render_nueva_venta():
         total = 0.0
         for i, item in enumerate(carrito):
             col1, col2, col3 = st.columns([3, 1, 1])
-            col1.write(f"**{item['producto_nombre']}** ({item['fraccion_nombre']}) x{item['cantidad']}")
+            etiq = f" {item.get('etiqueta_precio', '')}" if item.get('etiqueta_precio') else ""
+            col1.write(
+                f"**{item['producto_nombre']}** ({item['fraccion_nombre']}) "
+                f"x{item['cantidad']}{etiq}"
+            )
             col2.write(f"${item['subtotal']:,.2f}")
             if col3.button("X", key=f"rm_{i}"):
                 carrito.pop(i)
