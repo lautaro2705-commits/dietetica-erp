@@ -7,6 +7,7 @@ import json
 from datetime import datetime, date
 
 from sqlalchemy import func
+from sqlalchemy.orm import joinedload
 
 from database import (
     SessionLocal, Producto, Fraccion, Venta, DetalleVenta,
@@ -114,7 +115,11 @@ def desactivar_producto(usuario_id: int, producto_id: int):
 def listar_productos(solo_activos: bool = True):
     session = SessionLocal()
     try:
-        q = session.query(Producto)
+        q = (
+            session.query(Producto)
+            .options(joinedload(Producto.categoria))
+            .options(joinedload(Producto.proveedor))
+        )
         if solo_activos:
             q = q.filter(Producto.activo == True)
         return q.order_by(Producto.nombre).all()
@@ -247,6 +252,8 @@ def productos_bajo_stock():
     try:
         return (
             session.query(Producto)
+            .options(joinedload(Producto.categoria))
+            .options(joinedload(Producto.proveedor))
             .filter(Producto.activo == True)
             .filter(Producto.stock_actual <= Producto.stock_minimo)
             .order_by(Producto.stock_actual)
@@ -893,6 +900,8 @@ def productos_proximos_a_vencer(dias: int = 30):
         limite = hoy + timedelta(days=dias)
         return (
             session.query(Producto)
+            .options(joinedload(Producto.categoria))
+            .options(joinedload(Producto.proveedor))
             .filter(Producto.activo == True)
             .filter(Producto.fecha_vencimiento != None)
             .filter(Producto.fecha_vencimiento <= limite)
