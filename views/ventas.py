@@ -339,11 +339,13 @@ def _render_historial():
                     st.caption("No se pudo generar ticket.")
             with col_wa:
                 link_wa = generar_link_whatsapp(v.id, v.total)
-                st.link_button(
-                    "📱 WhatsApp",
-                    url=link_wa,
-                    key=f"wa_{v.id}",
-                    use_container_width=True,
+                st.markdown(
+                    f'<a href="{link_wa}" target="_blank" style="'
+                    f"display:inline-block;width:100%;text-align:center;"
+                    f"padding:0.4rem 1rem;border:1px solid rgba(49,51,63,0.2);"
+                    f"border-radius:0.5rem;text-decoration:none;color:inherit;"
+                    f'font-size:0.875rem;">📱 WhatsApp</a>',
+                    unsafe_allow_html=True,
                 )
 
             # Devoluciones (solo admin, solo ventas no anuladas)
