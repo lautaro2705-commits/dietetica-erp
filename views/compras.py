@@ -5,6 +5,7 @@ views/compras.py - Registro de compras a proveedores e historial.
 import streamlit as st
 from datetime import date, timedelta
 
+from database import hoy_argentina
 from controllers import (
     listar_productos, listar_proveedores,
     procesar_compra, listar_compras, obtener_detalle_compra,
@@ -162,10 +163,10 @@ def _render_historial():
     col1, col2 = st.columns(2)
     with col1:
         fecha_desde = st.date_input(
-            "Desde", value=date.today() - timedelta(days=30), key="compra_desde"
+            "Desde", value=hoy_argentina() - timedelta(days=30), key="compra_desde"
         )
     with col2:
-        fecha_hasta = st.date_input("Hasta", value=date.today(), key="compra_hasta")
+        fecha_hasta = st.date_input("Hasta", value=hoy_argentina(), key="compra_hasta")
 
     compras = cached_query(
         f"compras_{fecha_desde}_{fecha_hasta}",

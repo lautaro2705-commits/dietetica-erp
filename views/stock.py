@@ -5,7 +5,7 @@ eliminación de productos.
 
 import streamlit as st
 from datetime import date
-from database import SessionLocal, MovimientoStock
+from database import SessionLocal, MovimientoStock, hoy_argentina
 from controllers import (
     listar_productos, registrar_movimiento_stock, productos_bajo_stock,
     productos_proximos_a_vencer, desactivar_producto, listar_categorias,
@@ -123,7 +123,7 @@ def _render_vencimientos():
         return
 
     # Separar vencidos de próximos a vencer
-    hoy = date.today()
+    hoy = hoy_argentina()
     vencidos = [p for p in productos if p.fecha_vencimiento < hoy]
     por_vencer = [p for p in productos if p.fecha_vencimiento >= hoy]
 
@@ -273,7 +273,7 @@ def _render_gondola():
                     # Indicador de vencimiento
                     venc_icon = ""
                     if p.fecha_vencimiento:
-                        dias = (p.fecha_vencimiento - date.today()).days
+                        dias = (p.fecha_vencimiento - hoy_argentina()).days
                         if dias < 0:
                             venc_icon = " ⚠️"
                         elif dias <= 30:

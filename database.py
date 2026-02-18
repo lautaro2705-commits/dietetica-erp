@@ -7,7 +7,8 @@ from __future__ import annotations
 import os
 import hashlib
 import secrets
-from datetime import datetime
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()  # Carga variables desde .env
@@ -76,6 +77,23 @@ def verify_password(password: str, stored_hash: str, salt: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Zona horaria Argentina
+# ---------------------------------------------------------------------------
+
+TZ_AR = ZoneInfo("America/Argentina/Buenos_Aires")
+
+
+def ahora_argentina() -> datetime:
+    """Retorna datetime.now en hora Argentina (UTC-3)."""
+    return datetime.now(TZ_AR)
+
+
+def hoy_argentina() -> date:
+    """Retorna date.today en hora Argentina (UTC-3)."""
+    return datetime.now(TZ_AR).date()
+
+
+# ---------------------------------------------------------------------------
 # Modelos
 # ---------------------------------------------------------------------------
 
@@ -89,7 +107,7 @@ class Usuario(Base):
     nombre = Column(String(100), nullable=False)
     rol = Column(String(20), nullable=False, default="vendedor")  # admin | vendedor
     activo = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=ahora_argentina)
 
 
 class Categoria(Base):
@@ -126,7 +144,7 @@ class Cliente(Base):
     saldo_cuenta_corriente = Column(Float, nullable=False, default=0.0)  # positivo = nos debe
     descuento_general_pct = Column(Float, nullable=False, default=0.0)  # descuento % sobre mayorista
     activo = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=ahora_argentina)
 
     movimientos_cuenta = relationship("MovimientoCuenta", back_populates="cliente")
     precios_especiales = relationship("PrecioEspecial", back_populates="cliente")
@@ -142,7 +160,7 @@ class MovimientoCuenta(Base):
     monto = Column(Float, nullable=False)
     referencia = Column(String(200), default="")  # ej: "Venta #5" o "Pago efectivo"
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
-    fecha = Column(DateTime, default=datetime.utcnow)
+    fecha = Column(DateTime, default=ahora_argentina)
 
     cliente = relationship("Cliente", back_populates="movimientos_cuenta")
     usuario = relationship("Usuario")
@@ -166,8 +184,8 @@ class Producto(Base):
     stock_minimo = Column(Float, nullable=False, default=0.0)
     fecha_vencimiento = Column(Date, nullable=True)  # Null = sin vencimiento
     activo = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=ahora_argentina)
+    updated_at = Column(DateTime, default=ahora_argentina, onupdate=ahora_argentina)
 
     categoria = relationship("Categoria", back_populates="productos")
     proveedor = relationship("Proveedor", back_populates="productos")
@@ -193,7 +211,7 @@ class Venta(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
     cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True)
-    fecha = Column(DateTime, default=datetime.utcnow)
+    fecha = Column(DateTime, default=ahora_argentina)
     tipo = Column(String(20), nullable=False, default="minorista")  # mayorista | minorista
     metodo_pago = Column(String(30), nullable=False, default="efectivo")  # efectivo | transferencia | cuenta_corriente
     total = Column(Float, nullable=False, default=0.0)
@@ -232,7 +250,7 @@ class MovimientoStock(Base):
     cantidad = Column(Float, nullable=False)
     referencia = Column(String(200), default="")
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
-    fecha = Column(DateTime, default=datetime.utcnow)
+    fecha = Column(DateTime, default=ahora_argentina)
 
     producto = relationship("Producto")
     usuario = relationship("Usuario")
@@ -245,7 +263,7 @@ class Gasto(Base):
     descripcion = Column(String(300), nullable=False)
     monto = Column(Float, nullable=False)
     categoria_gasto = Column(String(100), default="General")
-    fecha = Column(DateTime, default=datetime.utcnow)
+    fecha = Column(DateTime, default=ahora_argentina)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
     activo = Column(Boolean, default=True)
 
@@ -262,7 +280,7 @@ class Auditoria(Base):
     registro_id = Column(Integer, nullable=True)
     valor_anterior = Column(Text, default="{}")  # JSON
     valor_nuevo = Column(Text, default="{}")  # JSON
-    fecha = Column(DateTime, default=datetime.utcnow)
+    fecha = Column(DateTime, default=ahora_argentina)
 
     usuario = relationship("Usuario")
 
@@ -273,7 +291,7 @@ class Compra(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
     proveedor_id = Column(Integer, ForeignKey("proveedores.id"), nullable=True)
-    fecha = Column(DateTime, default=datetime.utcnow)
+    fecha = Column(DateTime, default=ahora_argentina)
     numero_factura = Column(String(100), default="")
     total = Column(Float, nullable=False, default=0.0)
     observaciones = Column(Text, default="")
@@ -305,7 +323,7 @@ class Devolucion(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     venta_id = Column(Integer, ForeignKey("ventas.id"), nullable=False)
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
-    fecha = Column(DateTime, default=datetime.utcnow)
+    fecha = Column(DateTime, default=ahora_argentina)
     motivo = Column(String(300), default="")
     tipo = Column(String(30), nullable=False)  # anulacion_total | devolucion_parcial
     monto_devuelto = Column(Float, nullable=False, default=0.0)
@@ -325,7 +343,7 @@ class CajaDiaria(Base):
     monto_apertura = Column(Float, nullable=False, default=0.0)
     monto_cierre = Column(Float, nullable=True)
     estado = Column(String(20), nullable=False, default="abierta")  # abierta | cerrada
-    hora_apertura = Column(DateTime, default=datetime.utcnow)
+    hora_apertura = Column(DateTime, default=ahora_argentina)
     hora_cierre = Column(DateTime, nullable=True)
     observaciones_apertura = Column(Text, default="")
     observaciones_cierre = Column(Text, default="")
@@ -344,7 +362,7 @@ class RetiroEfectivo(Base):
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
     monto = Column(Float, nullable=False)
     motivo = Column(String(300), default="")
-    fecha = Column(DateTime, default=datetime.utcnow)
+    fecha = Column(DateTime, default=ahora_argentina)
 
     caja = relationship("CajaDiaria", back_populates="retiros")
     usuario = relationship("Usuario")

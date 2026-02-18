@@ -15,6 +15,7 @@ from database import (
     Usuario, hash_password, verify_password, Compra, DetalleCompra,
     Cliente, MovimientoCuenta, Devolucion, CajaDiaria, RetiroEfectivo,
     PrecioEspecial, Base, engine,
+    ahora_argentina, hoy_argentina,
 )
 
 
@@ -74,7 +75,7 @@ def actualizar_producto(usuario_id: int, producto_id: int, **kwargs) -> Producto
         anterior = {k: getattr(prod, k) for k in kwargs}
         for k, v in kwargs.items():
             setattr(prod, k, v)
-        prod.updated_at = datetime.utcnow()
+        prod.updated_at = ahora_argentina()
 
         registrar_auditoria(
             session, usuario_id, "MODIFICAR", "productos",
@@ -98,7 +99,7 @@ def desactivar_producto(usuario_id: int, producto_id: int):
             raise ValueError("Producto no encontrado")
         anterior = {"activo": True}
         prod.activo = False
-        prod.updated_at = datetime.utcnow()
+        prod.updated_at = ahora_argentina()
         registrar_auditoria(
             session, usuario_id, "DESACTIVAR", "productos",
             registro_id=prod.id, valor_anterior=anterior,
@@ -469,7 +470,7 @@ def aumento_masivo_precios(
                 nuevo[campo] = val_nuevo
                 setattr(prod, campo, val_nuevo)
 
-            prod.updated_at = datetime.utcnow()
+            prod.updated_at = ahora_argentina()
 
             registrar_auditoria(
                 session, usuario_id, "AUMENTO_MASIVO", "productos",
@@ -545,7 +546,7 @@ def listar_gastos(fecha_desde: date | None = None, fecha_hasta: date | None = No
 def resumen_caja(fecha: date | None = None):
     """Calcula resumen de caja para una fecha (default: hoy)."""
     if fecha is None:
-        fecha = date.today()
+        fecha = hoy_argentina()
 
     inicio = datetime.combine(fecha, datetime.min.time())
     fin = datetime.combine(fecha, datetime.max.time())
@@ -755,7 +756,7 @@ def procesar_compra(
             costo_anterior = prod.precio_costo
             if actualizar:
                 prod.precio_costo = precio_unitario
-                prod.updated_at = datetime.utcnow()
+                prod.updated_at = ahora_argentina()
 
             registrar_auditoria(
                 session, usuario_id, "COMPRA", "productos",
@@ -922,7 +923,7 @@ def productos_proximos_a_vencer(dias: int = 30):
     from datetime import timedelta
     session = SessionLocal()
     try:
-        hoy = date.today()
+        hoy = hoy_argentina()
         limite = hoy + timedelta(days=dias)
         return (
             session.query(Producto)
@@ -1207,7 +1208,7 @@ def obtener_caja_hoy() -> CajaDiaria | None:
             session.query(CajaDiaria)
             .options(joinedload(CajaDiaria.usuario_apertura))
             .options(joinedload(CajaDiaria.usuario_cierre))
-            .filter_by(fecha=date.today())
+            .filter_by(fecha=hoy_argentina())
             .first()
         )
     finally:
@@ -1225,12 +1226,12 @@ def abrir_caja(usuario_id: int, monto_apertura: float,
     """Abre la caja del día."""
     session = SessionLocal()
     try:
-        existente = session.query(CajaDiaria).filter_by(fecha=date.today()).first()
+        existente = session.query(CajaDiaria).filter_by(fecha=hoy_argentina()).first()
         if existente:
             raise ValueError("Ya existe una caja para hoy")
 
         caja = CajaDiaria(
-            fecha=date.today(),
+            fecha=hoy_argentina(),
             usuario_apertura_id=usuario_id,
             monto_apertura=monto_apertura,
             estado="abierta",
@@ -1241,7 +1242,7 @@ def abrir_caja(usuario_id: int, monto_apertura: float,
         registrar_auditoria(
             session, usuario_id, "ABRIR_CAJA", "cajas_diarias",
             registro_id=caja.id,
-            valor_nuevo={"monto_apertura": monto_apertura, "fecha": str(date.today())},
+            valor_nuevo={"monto_apertura": monto_apertura, "fecha": str(hoy_argentina())},
         )
         session.commit()
         session.refresh(caja)
@@ -1258,7 +1259,7 @@ def cerrar_caja(usuario_id: int, monto_cierre: float,
     """Cierra la caja del día."""
     session = SessionLocal()
     try:
-        caja = session.query(CajaDiaria).filter_by(fecha=date.today()).first()
+        caja = session.query(CajaDiaria).filter_by(fecha=hoy_argentina()).first()
         if not caja:
             raise ValueError("No hay caja abierta hoy")
         if caja.estado == "cerrada":
@@ -1267,7 +1268,7 @@ def cerrar_caja(usuario_id: int, monto_cierre: float,
         caja.estado = "cerrada"
         caja.usuario_cierre_id = usuario_id
         caja.monto_cierre = monto_cierre
-        caja.hora_cierre = datetime.utcnow()
+        caja.hora_cierre = ahora_argentina()
         caja.observaciones_cierre = observaciones
 
         registrar_auditoria(
@@ -1291,7 +1292,7 @@ def registrar_retiro(usuario_id: int, monto: float,
     """Registra un retiro de efectivo de la caja del día."""
     session = SessionLocal()
     try:
-        caja = session.query(CajaDiaria).filter_by(fecha=date.today()).first()
+        caja = session.query(CajaDiaria).filter_by(fecha=hoy_argentina()).first()
         if not caja or caja.estado != "abierta":
             raise ValueError("No hay caja abierta hoy")
 
@@ -1590,7 +1591,7 @@ def importar_productos(
                     existente.margen_minorista_pct = margen
                     if stock > 0:
                         existente.stock_actual = stock
-                    existente.updated_at = datetime.utcnow()
+                    existente.updated_at = ahora_argentina()
                     registrar_auditoria(
                         session, usuario_id, "IMPORTAR_ACTUALIZAR", "productos",
                         registro_id=existente.id, valor_anterior=anterior,
@@ -1642,7 +1643,7 @@ def generar_backup_completo() -> dict:
     try:
         backup = {
             "_metadata": {
-                "fecha": datetime.utcnow().isoformat(),
+                "fecha": ahora_argentina().isoformat(),
                 "version": "3.0",
                 "tablas": {},
             },

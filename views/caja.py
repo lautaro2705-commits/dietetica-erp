@@ -5,6 +5,7 @@ views/caja.py - Caja diaria con apertura/cierre, retiros y resumen.
 import streamlit as st
 from datetime import date, timedelta
 
+from database import hoy_argentina
 from controllers import (
     resumen_caja,
     obtener_caja_hoy,
@@ -94,7 +95,7 @@ def _render_apertura_cierre(caja):
         st.subheader("Cerrar Caja")
 
         # Calcular esperado (cacheado 15s)
-        resumen = cached_query("caja_resumen_hoy", resumen_caja, TTL_CORTO, date.today())
+        resumen = cached_query("caja_resumen_hoy", resumen_caja, TTL_CORTO, hoy_argentina())
         retiros_lista = cached_query(f"retiros_{caja.id}", listar_retiros, TTL_CORTO, caja.id)
         total_retiros = sum(r.monto for r in retiros_lista)
 
@@ -213,7 +214,7 @@ def _render_retiros(caja):
 # ---------------------------------------------------------------------------
 
 def _render_resumen_dia(caja):
-    resumen = cached_query("caja_resumen_hoy", resumen_caja, TTL_CORTO, date.today())
+    resumen = cached_query("caja_resumen_hoy", resumen_caja, TTL_CORTO, hoy_argentina())
 
     # Métricas principales
     col1, col2, col3, col4 = st.columns(4)
@@ -294,7 +295,7 @@ def _render_resumen_dia(caja):
 def _render_resumen_semanal():
     datos_semana = []
     for i in range(6, -1, -1):
-        dia = date.today() - timedelta(days=i)
+        dia = hoy_argentina() - timedelta(days=i)
         r = cached_query(f"caja_resumen_{dia}", resumen_caja, TTL_MEDIO, dia)
         desg = r.get("desglose_pago", {})
         datos_semana.append({

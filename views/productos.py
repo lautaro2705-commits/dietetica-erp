@@ -4,6 +4,7 @@ views/productos.py - ABM de productos y fracciones con edición y vencimiento.
 
 import streamlit as st
 from datetime import date
+from database import hoy_argentina
 from controllers import (
     crear_producto, actualizar_producto, desactivar_producto,
     listar_productos, crear_fraccion, listar_fracciones,
@@ -63,7 +64,7 @@ def _render_listado():
         # Indicador de vencimiento en el título
         venc_badge = ""
         if prod.fecha_vencimiento:
-            dias_restantes = (prod.fecha_vencimiento - date.today()).days
+            dias_restantes = (prod.fecha_vencimiento - hoy_argentina()).days
             if dias_restantes < 0:
                 venc_badge = " 🔴 VENCIDO"
             elif dias_restantes <= 30:
@@ -215,7 +216,7 @@ def _render_editar_producto(prod):
                 if tiene_venc:
                     fecha_venc = st.date_input(
                         "Fecha de vencimiento",
-                        value=prod.fecha_vencimiento or date.today(),
+                        value=prod.fecha_vencimiento or hoy_argentina(),
                         key=f"efv_{prod.id}",
                     )
                 else:
@@ -308,7 +309,7 @@ def _render_nuevo_producto():
         with col7:
             tiene_venc = st.checkbox("Tiene fecha de vencimiento", value=False)
             if tiene_venc:
-                fecha_venc = st.date_input("Fecha de vencimiento", value=date.today())
+                fecha_venc = st.date_input("Fecha de vencimiento", value=hoy_argentina())
             else:
                 fecha_venc = None
 

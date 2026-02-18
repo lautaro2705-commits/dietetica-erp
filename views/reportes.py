@@ -7,6 +7,7 @@ import streamlit as st
 import plotly.graph_objects as go
 from datetime import date, timedelta
 
+from database import hoy_argentina
 from controllers import (
     reporte_ventas_periodo,
     reporte_productos_vendidos,
@@ -47,11 +48,11 @@ def _render_ventas_periodo():
     col1, col2, col3 = st.columns(3)
     with col1:
         fecha_desde = st.date_input(
-            "Desde", value=date.today() - timedelta(days=30),
+            "Desde", value=hoy_argentina() - timedelta(days=30),
             key="rp_desde",
         )
     with col2:
-        fecha_hasta = st.date_input("Hasta", value=date.today(), key="rp_hasta")
+        fecha_hasta = st.date_input("Hasta", value=hoy_argentina(), key="rp_hasta")
     with col3:
         agrupacion = st.selectbox(
             "Agrupar por",
@@ -119,11 +120,11 @@ def _render_productos_vendidos():
     col1, col2 = st.columns(2)
     with col1:
         fecha_desde = st.date_input(
-            "Desde", value=date.today() - timedelta(days=30),
+            "Desde", value=hoy_argentina() - timedelta(days=30),
             key="pp_desde",
         )
     with col2:
-        fecha_hasta = st.date_input("Hasta", value=date.today(), key="pp_hasta")
+        fecha_hasta = st.date_input("Hasta", value=hoy_argentina(), key="pp_hasta")
 
     datos = cached_query(
         f"reporte_productos_{fecha_desde}_{fecha_hasta}",
@@ -190,11 +191,11 @@ def _render_ganancia():
     col1, col2, col3 = st.columns(3)
     with col1:
         fecha_desde = st.date_input(
-            "Desde", value=date.today() - timedelta(days=30),
+            "Desde", value=hoy_argentina() - timedelta(days=30),
             key="rg_desde",
         )
     with col2:
-        fecha_hasta = st.date_input("Hasta", value=date.today(), key="rg_hasta")
+        fecha_hasta = st.date_input("Hasta", value=hoy_argentina(), key="rg_hasta")
     with col3:
         agrupacion = st.selectbox(
             "Agrupar por",

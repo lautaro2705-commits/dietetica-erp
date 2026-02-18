@@ -6,6 +6,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from datetime import date, timedelta
 
+from database import hoy_argentina
 from controllers import (
     listar_productos, listar_fracciones, calcular_precio_fraccion,
     procesar_venta, listar_ventas, obtener_detalle_venta,
@@ -274,9 +275,9 @@ def _render_ticket_post_venta(venta_id: int, total: float):
 def _render_historial():
     col1, col2 = st.columns(2)
     with col1:
-        fecha_desde = st.date_input("Desde", value=date.today() - timedelta(days=30))
+        fecha_desde = st.date_input("Desde", value=hoy_argentina() - timedelta(days=30))
     with col2:
-        fecha_hasta = st.date_input("Hasta", value=date.today())
+        fecha_hasta = st.date_input("Hasta", value=hoy_argentina())
 
     ventas = cached_query(
         f"ventas_{fecha_desde}_{fecha_hasta}",

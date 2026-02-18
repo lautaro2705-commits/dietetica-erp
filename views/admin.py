@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 import streamlit as st
+from database import ahora_argentina
 from controllers import (
     crear_usuario, listar_usuarios, desactivar_usuario,
     generar_backup_completo, restaurar_backup,
@@ -127,7 +128,7 @@ def _render_backup():
                 json_str = json.dumps(
                     backup_data, ensure_ascii=False, indent=2, default=str
                 )
-                fecha_str = datetime.now().strftime("%Y-%m-%d")
+                fecha_str = ahora_argentina().strftime("%Y-%m-%d")
                 filename = f"backup_aqui_y_ahora_{fecha_str}.json"
 
                 # Resumen
